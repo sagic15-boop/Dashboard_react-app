@@ -1,0 +1,1291 @@
+import React, { useState, useMemo, useCallback, useEffect } from "react";
+import Papa from "papaparse";
+import {
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+} from "recharts";
+
+/* ------------------------------------------------------------------ */
+/*  נתוני דמו — מהדוח (מתעדכנים אוטומטית בעת חיבור הגיליון)             */
+/* ------------------------------------------------------------------ */
+
+const DEMO = {
+  summary: {
+    actual: { gross: 2114, quality: 136, qualityPct: 6, cpl: 94, cpql: 1597, inProcess: 699 },
+    target: { gross: 3931, quality: 476, qualityPct: 12, cpl: 172, cpql: 1422 },
+  },
+  platforms: [
+    { name: "PMAX",               budget: 190000, spent: 66483, gross: 345, cpl: 193, quality: 20, cpql: 3324,  qPct: 5.8,  inProc: 144, inProcPct: 42 },
+    { name: "PMAX Degree",        budget: 170000, spent: 45426, gross: 192, cpl: 237, quality: 19, cpql: 2391,  qPct: 9.9,  inProc: 85,  inProcPct: 44 },
+    { name: "חיפוש",              budget: 70000,  spent: 25562, gross: 795, cpl: 32,  quality: 67, cpql: 382,   qPct: 8.4,  inProc: 237, inProcPct: 30, drill: true },
+    { name: "Demandgen",          budget: 60000,  spent: 15522, gross: 23,  cpl: 675, quality: 1,  cpql: 15522, qPct: 4.3,  inProc: 11,  inProcPct: 48 },
+    { name: "פייסבוק תואר ראשון", budget: 55000,  spent: 20455, gross: 194, cpl: 105, quality: 7,  cpql: 2922,  qPct: 3.6,  inProc: 75,  inProcPct: 39 },
+    { name: "פייסבוק תואר שני",   budget: 45000,  spent: 19808, gross: 115, cpl: 172, quality: 4,  cpql: 4952,  qPct: 3.5,  inProc: 51,  inProcPct: 44 },
+    { name: "פייסבוק משאבי אנוש", budget: 5000,   spent: 1200,  gross: 16,  cpl: 75,  quality: 1,  cpql: 1200,  qPct: 6.3,  inProc: 1,   inProcPct: 6 },
+    { name: "UGC - Facebook",     budget: 40000,  spent: 5276,  gross: 19,  cpl: 278, quality: 2,  cpql: 2638,  qPct: 10.5, inProc: 8,   inProcPct: 42 },
+    { name: "Linkedin - HR2",     budget: 7000,   spent: 772,   gross: 2,   cpl: 386, quality: 0,  cpql: null,  qPct: 0,    inProc: 0,   inProcPct: 0 },
+    { name: "Linkedin - Law2",    budget: 30000,  spent: 8392,  gross: 238, cpl: 35,  quality: 4,  cpql: 2098,  qPct: 1.7,  inProc: null, inProcPct: null },
+    { name: "Tiktok - LP+LG",     budget: 25000,  spent: 0,     gross: null, cpl: null, quality: null, cpql: null, qPct: null, inProc: null, inProcPct: null },
+    { name: "Tiktok - LP - NEW",  budget: 0,      spent: 5619,  gross: 8,   cpl: 702, quality: 1,  cpql: 5619,  qPct: 12.5, inProc: 5,   inProcPct: 63 },
+  ],
+  campaigns: [
+    { name: "מותג",                 spent: 3359,  share: 13, gross: 201, cpl: 17,  quality: 28, cpql: 120,  qPct: 13.9, inProc: 69, inProcPct: 34 },
+    { name: "מותג+תואר",            spent: 10006, share: 39, gross: 65,  cpl: 154, quality: 13, cpql: 770,  qPct: 20.0, inProc: 24, inProcPct: 37 },
+    { name: "גנרי ראשון",           spent: 10537, share: 41, gross: 69,  cpl: 153, quality: 4,  cpql: 2634, qPct: 5.8,  inProc: 24, inProcPct: 35 },
+    { name: "משאבי אנוש תואר שני",  spent: 1660,  share: 6,  gross: 3,   cpl: 553, quality: 0,  cpql: null, qPct: 0,    inProc: 3,  inProcPct: 100 },
+    { name: "גנרי - RLSA",          spent: 10584, share: 41, gross: 25,  cpl: 423, quality: 3,  cpql: 3528, qPct: 12.0, inProc: 8,  inProcPct: 32 },
+    { name: "Direct (unknown leads)", spent: null, share: null, gross: 12, cpl: null, quality: 1, cpql: null, qPct: 8.3, inProc: 6, inProcPct: null },
+    { name: "GMB",                  spent: null,  share: null, gross: 378, cpl: null, quality: 12, cpql: null, qPct: 3.2, inProc: 59, inProcPct: null },
+    { name: "callbox",              spent: null,  share: null, gross: 36,  cpl: null, quality: 6,  cpql: null, qPct: 16.7, inProc: 7, inProcPct: null },
+  ],
+};
+
+const DEMO_AUCTION = [
+  { domain: "אתם — המרכז האקדמי פרס", is: 42, overlap: null, above: null, top: 78, outrank: null, you: true },
+  { domain: "ono.ac.il",    is: 31, overlap: 52, above: 38, top: 71, outrank: 55 },
+  { domain: "colman.ac.il", is: 24, overlap: 44, above: 29, top: 65, outrank: 62 },
+  { domain: "mta.ac.il",    is: 18, overlap: 36, above: 22, top: 58, outrank: 70 },
+  { domain: "openu.ac.il",  is: 15, overlap: 28, above: 17, top: 51, outrank: 76 },
+];
+
+/* ------------------------------------------------------------------ */
+/*  עזרי פורמט, פרסינג ואחסון                                           */
+/* ------------------------------------------------------------------ */
+
+const toNum = (v) => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).replace(/[₪%\s"]/g, "").replace(/,/g, "").trim();
+  if (s === "" || s === "-" || s.includes("#DIV") || s.toUpperCase().includes("N/A")) return null;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : null;
+};
+
+const nis = (v, dec = 0) =>
+  v === null || v === undefined ? "—" : "₪" + Number(v).toLocaleString("he-IL", { maximumFractionDigits: dec });
+const num = (v) => (v === null || v === undefined ? "—" : Number(v).toLocaleString("he-IL"));
+const pct = (v, dec = 0) => (v === null || v === undefined ? "—" : Number(v).toFixed(dec) + "%");
+const heDate = (d) => new Date(d).toLocaleDateString("he-IL", { day: "numeric", month: "long" }) + " · " +
+  new Date(d).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+
+const store = {
+  async get(k) { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } },
+  async set(k, v) { try { await window.storage.set(k, JSON.stringify(v)); } catch {} },
+};
+
+function mapHeader(rows, anchor) {
+  for (let i = 0; i < rows.length; i++) {
+    const idx = rows[i].findIndex((c) => String(c || "").trim() === anchor);
+    if (idx !== -1) return { rowIdx: i, cols: rows[i].map((c) => String(c || "").trim()) };
+  }
+  return null;
+}
+const findCol = (cols, ...keys) =>
+  cols.findIndex((c) => keys.some((k) => String(c).replace(/\s/g, "").includes(k.replace(/\s/g, ""))));
+
+function parseReport(csvText) {
+  const rows = Papa.parse(csvText).data;
+  const out = { summary: null, platforms: [], campaigns: [] };
+
+  const sumHdr = rows.findIndex(
+    (r) => r.some((c) => String(c).includes("לידים ברוטו")) && r.some((c) => String(c).includes("לידים איכותיים"))
+  );
+  if (sumHdr !== -1) {
+    const cols = rows[sumHdr].map((c) => String(c || "").trim());
+    const ci = {
+      gross: findCol(cols, "לידים ברוטו"),
+      quality: findCol(cols, "לידים איכותיים"),
+      qualityPct: findCol(cols, "% לידים איכותיים", "%לידים"),
+      cpl: findCol(cols, "עלות לליד ברוטו", "עלות ליד ברוטו"),
+      cpql: findCol(cols, "עלות לליד איכותי", "עלות ליד איכותי"),
+      inProcess: findCol(cols, "לידים בתהליך"),
+    };
+    const pick = (label) => rows.slice(sumHdr + 1, sumHdr + 6).find((r) => r.some((c) => String(c).trim() === label));
+    const a = pick("בפועל"), t = pick("יעד");
+    const read = (r) =>
+      r && {
+        gross: toNum(r[ci.gross]), quality: toNum(r[ci.quality]), qualityPct: toNum(r[ci.qualityPct]),
+        cpl: toNum(r[ci.cpl]), cpql: toNum(r[ci.cpql]), inProcess: toNum(r[ci.inProcess]),
+      };
+    if (a && t) out.summary = { actual: read(a), target: read(t) };
+  }
+
+  const ph = mapHeader(rows, "פלטפורמה");
+  if (ph) {
+    const c = ph.cols;
+    const ci = {
+      name: c.findIndex((x) => x === "פלטפורמה"),
+      budget: findCol(c, "תקציב"),
+      spent: findCol(c, "תקציב שמומש"),
+      gross: findCol(c, "לידים ברוטו"),
+      cpl: findCol(c, "עלות ליד ברוטו", "עלות לליד ברוטו"),
+      quality: findCol(c, "לידים איכותיים"),
+      cpql: findCol(c, "עלות ליד איכותי", "עלות לליד איכותי"),
+      qPct: findCol(c, "אחוז איכות"),
+      inProc: findCol(c, "לידים בתהליך"),
+      inProcPct: findCol(c, "אחוז הלידים בתהליך"),
+    };
+    for (let i = ph.rowIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const name = String(r[ci.name] || "").trim();
+      if (!name) continue;
+      if (/total|סה"כ|סהכ/i.test(name)) break;
+      out.platforms.push({
+        name, budget: toNum(r[ci.budget]) ?? 0, spent: toNum(r[ci.spent]) ?? 0,
+        gross: toNum(r[ci.gross]), cpl: toNum(r[ci.cpl]),
+        quality: toNum(r[ci.quality]), cpql: toNum(r[ci.cpql]),
+        qPct: toNum(r[ci.qPct]), inProc: toNum(r[ci.inProc]), inProcPct: toNum(r[ci.inProcPct]),
+        drill: name.includes("חיפוש"),
+      });
+    }
+  }
+
+  const ch = mapHeader(rows, "קמפיין");
+  if (ch) {
+    const c = ch.cols;
+    const ci = {
+      name: c.findIndex((x) => x === "קמפיין"),
+      spent: findCol(c, "תקציב שמומש"),
+      share: findCol(c, "נתח מעלות"),
+      gross: findCol(c, "לידים ברוטו"),
+      cpl: findCol(c, "עלות ליד ברוטו", "עלות לליד ברוטו"),
+      quality: findCol(c, "לידים איכותיים"),
+      cpql: findCol(c, "עלות ליד איכותי", "עלות לליד איכותי"),
+      qPct: findCol(c, "אחוז איכות"),
+      inProc: findCol(c, "לידים בתהליך"),
+      inProcPct: findCol(c, "אחוז הלידים בתהליך"),
+    };
+    for (let i = ch.rowIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const name = String(r[ci.name] || "").trim();
+      if (!name) continue;
+      if (/total|סה"כ|סהכ/i.test(name)) break;
+      out.campaigns.push({
+        name, spent: toNum(r[ci.spent]), share: toNum(r[ci.share]),
+        gross: toNum(r[ci.gross]), cpl: toNum(r[ci.cpl]),
+        quality: toNum(r[ci.quality]), cpql: toNum(r[ci.cpql]),
+        qPct: toNum(r[ci.qPct]), inProc: toNum(r[ci.inProc]), inProcPct: toNum(r[ci.inProcPct]),
+      });
+    }
+  }
+
+  const ok = out.summary && out.platforms.length > 0;
+  return ok ? { summary: out.summary, platforms: out.platforms, campaigns: out.campaigns.length ? out.campaigns : [] } : null;
+}
+
+function parseAuction(text) {
+  const rows = Papa.parse(text.trim(), { delimiter: text.includes("\t") ? "\t" : "" }).data.filter((r) => r.length > 2);
+  if (rows.length < 2) return null;
+  const hdr = rows[0].map((c) => String(c || "").toLowerCase());
+  const col = (...keys) => hdr.findIndex((h) => keys.some((k) => h.includes(k)));
+  const ci = {
+    domain: 0,
+    is: col("impression share", "נתח חשיפ", "is"),
+    overlap: col("overlap", "חפיפה"),
+    above: col("above", "מעל"),
+    top: col("top of page", "ראש העמוד", "עליון"),
+    outrank: col("outrank", "דירוג גבוה"),
+  };
+  const pc = (v) => {
+    const n = toNum(String(v).replace("<", ""));
+    return n === null ? null : n <= 1 ? Math.round(n * 100) : Math.round(n);
+  };
+  const out = rows.slice(1).map((r) => ({
+    domain: String(r[ci.domain] || "").trim(),
+    is: pc(r[ci.is]), overlap: pc(r[ci.overlap]), above: pc(r[ci.above]),
+    top: pc(r[ci.top]), outrank: pc(r[ci.outrank]),
+    you: /you|את[הם]|עצמ/i.test(String(r[ci.domain])),
+  })).filter((r) => r.domain);
+  return out.length ? out : null;
+}
+
+function toCsvUrl(link) {
+  const m = String(link).match(/\/d\/(?:e\/)?([\w-]+)/);
+  if (!m) return null;
+  const gid = (String(link).match(/[#&?]gid=(\d+)/) || [])[1] || "0";
+  if (link.includes("/d/e/")) return `https://docs.google.com/spreadsheets/d/e/${m[1]}/pub?output=csv&gid=${gid}`;
+  return `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv&gid=${gid}`;
+}
+
+/* קידוד/פענוח מצב הדשבורד לתוך קישור (hash) — הקישור נושא את הנתונים עצמם */
+const encodeState = (obj) =>
+  btoa(unescape(encodeURIComponent(JSON.stringify(obj)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const decodeState = (s) =>
+  JSON.parse(decodeURIComponent(escape(atob(s.replace(/-/g, "+").replace(/_/g, "/")))));
+
+function currentBaseUrl() {
+  try { return window.top.location.href.split("#")[0]; } catch {}
+  return window.location.href.split("#")[0];
+}
+
+/* ------------------------------------------------------------------ */
+/*  דלתא בין דוחות                                                      */
+/* ------------------------------------------------------------------ */
+
+function computeDelta(curr, prev) {
+  if (!prev || !prev.data) return null;
+  const p = prev.data;
+  const d = { date: prev.savedAt, summary: {}, platforms: {} };
+  const S = curr.summary.actual, PS = p.summary.actual;
+  ["gross", "quality", "cpl", "cpql", "qualityPct", "inProcess"].forEach((k) => {
+    if (S[k] !== null && PS[k] !== null && S[k] !== undefined && PS[k] !== undefined) d.summary[k] = S[k] - PS[k];
+  });
+  const spentNow = curr.platforms.reduce((s, x) => s + (x.spent || 0), 0);
+  const spentPrev = p.platforms.reduce((s, x) => s + (x.spent || 0), 0);
+  d.summary.spent = spentNow - spentPrev;
+  curr.platforms.forEach((pl) => {
+    const old = p.platforms.find((x) => x.name === pl.name);
+    if (old) d.platforms[pl.name] = {
+      spent: (pl.spent || 0) - (old.spent || 0),
+      gross: pl.gross !== null && old.gross !== null ? pl.gross - old.gross : null,
+      quality: pl.quality !== null && old.quality !== null ? pl.quality - old.quality : null,
+    };
+  });
+  d.campaigns = {};
+  (curr.campaigns || []).forEach((cm) => {
+    const old = (p.campaigns || []).find((x) => x.name === cm.name);
+    if (old) d.campaigns[cm.name] = {
+      spent: (cm.spent || 0) - (old.spent || 0),
+      gross: cm.gross !== null && old.gross !== null ? cm.gross - old.gross : null,
+      quality: cm.quality !== null && old.quality !== null ? cm.quality - old.quality : null,
+    };
+  });
+  return d;
+}
+
+const Delta = ({ v, inverse, suffix = "", money }) => {
+  if (v === null || v === undefined || v === 0 || Number.isNaN(v)) return null;
+  const good = inverse ? v < 0 : v > 0;
+  const fmt = money ? nis(Math.abs(v)) : Math.abs(v) % 1 ? Math.abs(v).toFixed(1) : num(Math.abs(v));
+  return (
+    <span style={{ color: good ? "#37C9A9" : "#F0685F", fontSize: 12, fontWeight: 700, marginRight: 6, direction: "ltr", display: "inline-block" }}>
+      {v > 0 ? "▲" : "▼"} {fmt}{suffix}
+    </span>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/*  תובנות אוטומטיות                                                    */
+/* ------------------------------------------------------------------ */
+
+function buildInsights(data, delta, isActive = () => true) {
+  const out = [];
+  const P = data.platforms.filter((p) => (p.spent || 0) > 1000 && isActive(p.name));
+  const withQ = P.filter((p) => (p.quality || 0) >= 2 && p.cpql);
+  if (withQ.length) {
+    const best = [...withQ].sort((a, b) => a.cpql - b.cpql)[0];
+    out.push({ icon: "🏆", tone: "good", text: `${best.name} הוא הכלי היעיל ביותר לליד איכותי — ${nis(best.cpql)} בלבד (${pct(best.qPct, 1)} איכות). שווה לבחון הסטת תקציב לכיוונו.` });
+    const worst = [...withQ].sort((a, b) => b.cpql - a.cpql)[0];
+    if (worst.name !== best.name && worst.cpql > best.cpql * 4)
+      out.push({ icon: "⚠️", tone: "bad", text: `${worst.name} יקר משמעותית — ${nis(worst.cpql)} לליד איכותי, פי ${Math.round(worst.cpql / best.cpql)} מ־${best.name}. מומלץ לבחון קריאייטיב/קהלים או צמצום.` });
+  }
+  const burned = P.filter((p) => (p.spent || 0) > 3000 && (p.quality || 0) === 0);
+  burned.forEach((p) => out.push({ icon: "🔻", tone: "bad", text: `${p.name} שרף ${nis(p.spent)} בלי ליד איכותי אחד — לעצור ולבדוק לפני המשך השקעה.` }));
+  /* כלים כבויים — או להתעלם, או להמליץ להפעיל אם היו יעילים */
+  const inactiveGood = data.platforms.filter((p) => !isActive(p.name) && (p.quality || 0) >= 2 && p.cpql);
+  inactiveGood.sort((a, b) => a.cpql - b.cpql).slice(0, 2).forEach((p) =>
+    out.push({ icon: "💤", tone: "warn", text: `${p.name} מסומן ככבוי, אבל היסטורית הביא ${num(p.quality)} לידים איכותיים ב־${nis(p.cpql)} לליד — שווה לשקול הפעלה מחדש.` })
+  );
+  const s = data.summary;
+  if (s.actual.qualityPct !== null && s.target.qualityPct)
+    out.push({
+      icon: s.actual.qualityPct >= s.target.qualityPct ? "✅" : "🎯", tone: s.actual.qualityPct >= s.target.qualityPct ? "good" : "warn",
+      text: s.actual.qualityPct >= s.target.qualityPct
+        ? `אחוז האיכות (${pct(s.actual.qualityPct)}) עומד ביעד (${pct(s.target.qualityPct)}).`
+        : `אחוז האיכות עומד על ${pct(s.actual.qualityPct)} מול יעד של ${pct(s.target.qualityPct)} — הפער הוא בעיקר בטיוב הלידים, לא בכמות. ${num(s.actual.inProcess)} לידים עדיין בתהליך ויכולים לסגור את הפער.`,
+    });
+  const camps = data.campaigns.filter((c) => c.spent && isActive(c.name));
+  if (camps.length) {
+    const bestC = [...camps].filter((c) => (c.quality || 0) >= 2).sort((a, b) => (b.qPct || 0) - (a.qPct || 0))[0];
+    if (bestC) out.push({ icon: "🔍", tone: "good", text: `בחיפוש: קמפיין "${bestC.name}" מוביל באיכות עם ${pct(bestC.qPct, 1)} ו־${nis(bestC.cpql)} לליד איכותי.` });
+    const zero = camps.find((c) => (c.spent || 0) > 1000 && (c.quality || 0) === 0);
+    if (zero) out.push({ icon: "🧯", tone: "warn", text: `קמפיין "${zero.name}" מימש ${nis(zero.spent)} ללא לידים איכותיים — כדאי לבחון מילות מפתח שליליות והתאמת ה־LP.` });
+  }
+  if (delta) {
+    const movers = Object.entries(delta.platforms)
+      .filter(([, d]) => d.quality)
+      .sort((a, b) => Math.abs(b[1].quality) - Math.abs(a[1].quality))[0];
+    if (movers && movers[1].quality)
+      out.push({
+        icon: movers[1].quality > 0 ? "📈" : "📉", tone: movers[1].quality > 0 ? "good" : "bad",
+        text: `מאז הדוח הקודם (${heDate(delta.date)}): ${movers[0]} ${movers[1].quality > 0 ? "הוסיף" : "איבד"} ${Math.abs(movers[1].quality)} לידים איכותיים.`,
+      });
+    if (delta.summary.spent)
+      out.push({ icon: "💸", tone: "info", text: `מומשו ${nis(Math.abs(delta.summary.spent))} מאז הדוח הקודם, שהניבו ${num(delta.summary.gross ?? 0)} לידים חדשים (${num(delta.summary.quality ?? 0)} איכותיים).` });
+  }
+  return out.slice(0, 7);
+}
+
+function buildAuctionRecs(rows) {
+  const you = rows.find((r) => r.you) || rows[0];
+  const comps = rows.filter((r) => !r.you);
+  const recs = [];
+  if (you && you.is !== null && you.is < 45)
+    recs.push({ icon: "📢", text: `נתח החשיפות שלכם עומד על ${you.is}% — יותר ממחצית החיפושים הרלוונטיים מוצגים בלעדיכם. הגורם הנפוץ: מגבלת תקציב או Rank. שקלו תגבור תקציב חיפוש בקמפיינים הגנריים.` });
+  comps.forEach((c) => {
+    if (c.overlap !== null && c.above !== null && c.overlap > 40 && c.above > 30)
+      recs.push({ icon: "⚔️", text: `${c.domain} מופיע מעליכם ב־${c.above}% מהמכרזים המשותפים (חפיפה ${c.overlap}%). מומלץ: חיזוק בידים במותג + קמפיין RLSA ממוקד מולו.` });
+    if (c.outrank !== null && c.outrank < 55)
+      recs.push({ icon: "🛡️", text: `שיעור ה־Outranking מול ${c.domain} עומד על ${c.outrank}% בלבד — קרוב לתיקו. שיפור Ad Rank (תוספי מודעה, רלוונטיות LP) ייתן כאן יתרון מהיר.` });
+  });
+  if (you && you.top !== null && you.top >= 75)
+    recs.push({ icon: "✅", text: `שיעור הופעה בראש העמוד גבוה (${you.top}%) — המיקום כשמופיעים טוב; הבעיה, אם קיימת, היא בכיסוי ולא באיכות.` });
+  if (!recs.length) recs.push({ icon: "ℹ️", text: "הדביקו ייצוא Auction Insights עדכני מגוגל אדס לקבלת המלצות מותאמות." });
+  return recs.slice(0, 5);
+}
+
+/* ------------------------------------------------------------------ */
+/*  צבעים                                                               */
+/* ------------------------------------------------------------------ */
+
+const C = {
+  bg: "#0D1626", panel: "#152238", panelSoft: "#1B2B45", line: "#26395A",
+  text: "#E9EFFA", dim: "#8FA3C2",
+  amber: "#F5B841", teal: "#37C9A9", coral: "#F0685F", blue: "#5E93F5", violet: "#9A7BF7",
+};
+const PIE_COLORS = [C.amber, C.blue, C.teal, C.coral, C.violet, "#E58BC0", "#7FD1F0", "#C9D66B", "#F58F5E", "#6BC5D6", "#B48EAD", "#8AC98A"];
+
+const qualityColor = (p) => {
+  if (p === null || p === undefined) return C.dim;
+  if (p >= 10) return C.teal;
+  if (p >= 6) return C.amber;
+  return C.coral;
+};
+
+/* ------------------------------------------------------------------ */
+/*  מצב סטורי — "המצגת של הבוקר"                                        */
+/* ------------------------------------------------------------------ */
+
+function StoryMode({ slides, onClose, onShare }) {
+  const [idx, setIdx] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const next = () => (idx < slides.length - 1 ? setIdx(idx + 1) : onClose());
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === " ") { e.preventDefault(); setPaused((p) => !p); }
+      if (e.key === "ArrowLeft") setIdx((i) => Math.min(i + 1, slides.length - 1));
+      if (e.key === "ArrowRight") setIdx((i) => Math.max(i - 1, 0));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [slides.length, onClose]);
+  const s = slides[idx];
+  return (
+    <div className="story-overlay" dir="rtl">
+      <div className="story-card" style={{ background: s.bg }}>
+        <div className="story-progress">
+          {slides.map((_, i) => (
+            <div key={i} className="story-seg">
+              <div className="story-seg-fill" key={`f${i}-${idx}`}
+                   style={{ width: i < idx ? "100%" : i === idx ? undefined : "0%", animationPlayState: paused ? "paused" : "running" }}
+                   data-active={i === idx ? "1" : "0"}
+                   onAnimationEnd={i === idx ? next : undefined} />
+            </div>
+          ))}
+        </div>
+        <button className="story-close" onClick={onClose} aria-label="סגירה">✕</button>
+        <div className="story-actions">
+          <button className="story-share" onClick={onShare}>📤 שיתוף</button>
+          <button className="story-share" onClick={() => setPaused((p) => !p)} aria-label={paused ? "המשך" : "השהיה"}>
+            {paused ? "▶ המשך" : "⏸ השהיה"}
+          </button>
+        </div>
+        {paused && <div className="story-paused-tag">מושהה · הזמן עצר בשבילך ⏸</div>}
+        <div className="story-body">
+          <div className="story-kicker">{s.kicker}</div>
+          <div className="story-big" style={{ color: s.color }}>{s.big}</div>
+          {s.text && <div className="story-text">{s.text}</div>}
+          {s.rows && (
+            <div className="story-rows">
+              {s.rows.map((r, i) => (
+                <div className="story-row" key={i}>
+                  <span className="story-row-label">{r.label}</span>
+                  <span className="story-row-value" style={{ color: r.color || C.text }}>{r.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {s.foot && <div className="story-foot">{s.foot}</div>}
+        </div>
+        <div className="story-nav prev" onClick={() => setIdx((i) => Math.max(i - 1, 0))} />
+        <div className="story-nav next" onClick={next} />
+        <div className="story-count">{idx + 1} / {slides.length}</div>
+      </div>
+    </div>
+  );
+}
+
+function buildSlides(data, totals, delta, insights, isActive = () => true) {
+  const s = data.summary;
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const pace = Math.round((now.getDate() / daysInMonth) * 100);
+  const util = Math.round(totals.util);
+  const gap = util - pace;
+  const g1 = "linear-gradient(160deg,#0D1626 0%,#1B2B45 100%)";
+  const dayCPL = (m) => (m.gross > 0 ? m.spent / m.gross : null);
+  const dayCPQL = (m) => (m.quality > 0 ? m.spent / m.quality : null);
+
+  /* תנועות היממה האחרונה (דלתא מול הדוח הקודם) — כלים + קמפייני חיפוש */
+  const plMovers = delta ? Object.entries(delta.platforms).map(([name, d]) => ({ name, raw: name, ...d })) : [];
+  const cmMovers = delta && delta.campaigns
+    ? Object.entries(delta.campaigns).map(([name, d]) => ({ name: `חיפוש · ${name}`, raw: name, ...d })) : [];
+  const all = [...plMovers, ...cmMovers];
+  const topGross = all.filter((m) => (m.gross || 0) > 0).sort((a, b) => b.gross - a.gross)[0];
+  const topQuality = all.filter((m) => (m.quality || 0) > 0).sort((a, b) => b.quality - a.quality)[0];
+  const weakGross = plMovers
+    .filter((m) => isActive(m.raw))
+    .filter((m) => m.spent > 300 && ((m.gross || 0) <= 0 || (dayCPL(m) && dayCPL(m) > (s.actual.cpl || 100) * 2)))
+    .sort((a, b) => b.spent - a.spent).slice(0, 3);
+  const weakQuality = plMovers
+    .filter((m) => isActive(m.raw))
+    .filter((m) => m.spent > 300 && (m.quality || 0) <= 0)
+    .sort((a, b) => b.spent - a.spent).slice(0, 3);
+
+  /* חלופות כשאין עדיין דוח קודם */
+  const noDeltaNote = "אין עדיין דוח קודם להשוואה — מוצגים נתונים מצטברים";
+  const bestGrossAll = [...data.platforms].filter((p) => p.gross).sort((a, b) => b.gross - a.gross)[0];
+  const bestQualityAll = [...data.platforms].filter((p) => p.quality).sort((a, b) => b.quality - a.quality)[0];
+  const weakGrossAll = data.platforms.filter((p) => isActive(p.name) && (p.spent || 0) > 3000 && p.cpl && p.cpl > (s.actual.cpl || 100) * 3).slice(0, 3);
+  const weakQualityAll = data.platforms.filter((p) => isActive(p.name) && (p.spent || 0) > 3000 && (p.quality || 0) === 0).slice(0, 3);
+
+  const weakRow = (m, quality) => ({
+    label: m.name,
+    value: `${nis(m.spent)} · ${num(quality ? m.quality ?? 0 : m.gross ?? 0)} לידים · ${nis(quality ? dayCPQL(m) : dayCPL(m)) || "—"} לליד`,
+    color: C.coral,
+  });
+  const weakRowAll = (p, quality) => ({
+    label: p.name,
+    value: `${nis(p.spent)} · ${num(quality ? p.quality : p.gross)} לידים · ${nis(quality ? p.cpql : p.cpl)} לליד`,
+    color: C.coral,
+  });
+
+  const slides = [
+    /* 1 — נתונים כלליים: תקציב, קצב קלנדרי, ניצול */
+    {
+      kicker: now.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" }) + " · תמונת מצב",
+      big: `${util}% ניצול`,
+      color: util >= pace ? C.teal : C.amber,
+      rows: [
+        { label: "תקציב שנוצל", value: `${nis(totals.spent)} מתוך ${nis(totals.budget)}`, color: C.amber },
+        { label: "קצב קלנדרי של החודש", value: `${pace}% (יום ${now.getDate()} מתוך ${daysInMonth})` },
+        {
+          label: "ניצול מול קצב",
+          value: `אנחנו ב־${util}% ניצול מול ${pace}% קצב קלנדרי (${gap >= 0 ? "+" : "−"}${Math.abs(gap)}%)`,
+          color: gap >= 0 ? C.teal : C.coral,
+        },
+        ...(delta && delta.summary.spent ? [{ label: "מומש ביממה האחרונה", value: nis(delta.summary.spent), color: C.blue }] : []),
+      ],
+      foot: delta ? `השוואה מול הדוח מ־${heDate(delta.date)}` : noDeltaNote,
+      bg: g1,
+    },
+    /* 2 — ברוטו */
+    {
+      kicker: "לידים ברוטו",
+      big: num(s.actual.gross),
+      color: C.blue,
+      rows: [
+        { label: "עמידה ביעד", value: `${Math.round((s.actual.gross / s.target.gross) * 100)}% מתוך ${num(s.target.gross)}` },
+        { label: "עלות לליד ברוטו", value: `${nis(s.actual.cpl)} (יעד: ${nis(s.target.cpl)})`, color: s.actual.cpl <= s.target.cpl ? C.teal : C.coral },
+        ...(delta && delta.summary.gross ? [{ label: "לידים ביממה האחרונה", value: `+${num(delta.summary.gross)}`, color: C.teal }] : []),
+        topGross
+          ? { label: "מוביל היממה", value: `${topGross.name} · ${num(topGross.gross)} לידים (${nis(dayCPL(topGross))} לליד)`, color: C.amber }
+          : bestGrossAll
+            ? { label: "המוביל המצטבר", value: `${bestGrossAll.name} · ${num(bestGrossAll.gross)} לידים`, color: C.amber }
+            : null,
+      ].filter(Boolean),
+      foot: delta ? null : noDeltaNote,
+      bg: g1,
+    },
+    /* 3 — איכות */
+    {
+      kicker: "לידים איכותיים",
+      big: num(s.actual.quality),
+      color: C.teal,
+      rows: [
+        { label: "עמידה ביעד", value: `${Math.round((s.actual.quality / s.target.quality) * 100)}% מתוך ${num(s.target.quality)}` },
+        { label: "אחוז איכות", value: `${pct(s.actual.qualityPct)} (יעד: ${pct(s.target.qualityPct)})`, color: s.actual.qualityPct >= s.target.qualityPct ? C.teal : C.coral },
+        { label: "עלות לליד איכותי", value: `${nis(s.actual.cpql)} (יעד: ${nis(s.target.cpql)})`, color: s.actual.cpql <= s.target.cpql ? C.teal : C.coral },
+        ...(delta && delta.summary.quality ? [{ label: "איכותיים ביממה האחרונה", value: `+${num(delta.summary.quality)}`, color: C.teal }] : []),
+        topQuality
+          ? { label: "מוביל היממה", value: `${topQuality.name} · ${num(topQuality.quality)} איכותיים (${nis(dayCPQL(topQuality))} לליד)`, color: C.amber }
+          : bestQualityAll
+            ? { label: "המוביל המצטבר", value: `${bestQualityAll.name} · ${num(bestQualityAll.quality)} איכותיים`, color: C.amber }
+            : null,
+        { label: "בתהליך", value: `${num(s.actual.inProcess)} לידים שעוד יכולים להפוך לאיכותיים`, color: C.violet },
+      ].filter(Boolean),
+      foot: delta ? null : noDeltaNote,
+      bg: g1,
+    },
+    /* 4 — לשים לב · ברוטו */
+    {
+      kicker: "🚨 לשים לב · ברוטו" + (delta ? " · היממה האחרונה" : ""),
+      big: (delta ? weakGross : weakGrossAll).length ? `${(delta ? weakGross : weakGrossAll).length} כלים` : "הכל תקין ✅",
+      color: (delta ? weakGross : weakGrossAll).length ? C.coral : C.teal,
+      rows: delta
+        ? (weakGross.length ? weakGross.map((m) => weakRow(m, false)) : [{ label: "אין חריגים", value: "כל הכלים שהוציאו תקציב הביאו לידים בעלות סבירה", color: C.teal }])
+        : (weakGrossAll.length ? weakGrossAll.map((p) => weakRowAll(p, false)) : [{ label: "אין חריגים", value: "אין כלים עם עלות לליד חריגה", color: C.teal }]),
+      foot: "חריג = תקציב שמומש בלי לידים, או עלות לליד כפולה ומעלה מהממוצע",
+      bg: g1,
+    },
+    /* 5 — לשים לב · איכות */
+    {
+      kicker: "🚨 לשים לב · איכות" + (delta ? " · היממה האחרונה" : ""),
+      big: (delta ? weakQuality : weakQualityAll).length ? `${(delta ? weakQuality : weakQualityAll).length} כלים` : "הכל תקין ✅",
+      color: (delta ? weakQuality : weakQualityAll).length ? C.coral : C.teal,
+      rows: delta
+        ? (weakQuality.length ? weakQuality.map((m) => weakRow(m, true)) : [{ label: "אין חריגים", value: "כל הכלים שהוציאו תקציב הביאו גם לידים איכותיים", color: C.teal }])
+        : (weakQualityAll.length ? weakQualityAll.map((p) => weakRowAll(p, true)) : [{ label: "אין חריגים", value: "אין כלים ששרפו תקציב בלי איכותיים", color: C.teal }]),
+      foot: "חריג = תקציב שמומש בלי ליד איכותי אחד",
+      bg: g1,
+    },
+  ];
+  if (insights.length) slides.push({
+    kicker: "💡 תובנת היום",
+    big: insights[0].icon,
+    color: C.amber,
+    text: insights[0].text,
+    foot: "כל התובנות המלאות — בדשבורד",
+    bg: g1,
+  });
+  return slides;
+}
+
+/* ------------------------------------------------------------------ */
+/*  רכיבים                                                              */
+/* ------------------------------------------------------------------ */
+
+function KpiCard({ title, actual, target, format, inverse, sub, delta, deltaMoney, deltaSuffix }) {
+  const prog = target ? (inverse ? (target / actual) * 100 : (actual / target) * 100) : null;
+  const clamped = prog === null ? null : Math.max(0, Math.min(prog, 130));
+  const good = prog !== null && prog >= (inverse ? 100 : 90);
+  return (
+    <div className="kpi">
+      <div className="kpi-title">{title}</div>
+      <div className="kpi-value">
+        {format(actual)}
+        <Delta v={delta} inverse={inverse} money={deltaMoney} suffix={deltaSuffix} />
+      </div>
+      <div className="kpi-target">יעד: {format(target)}{sub ? ` · ${sub}` : ""}</div>
+      {prog !== null && (
+        <div className="kpi-bar-wrap">
+          <div className="kpi-bar" style={{ width: `${(clamped / 130) * 100}%`, background: good ? C.teal : prog >= 50 ? C.amber : C.coral }} />
+          <div className="kpi-goal-line" style={{ right: `${(100 / 130) * 100}%` }} />
+        </div>
+      )}
+      {prog !== null && (
+        <div className="kpi-pct" style={{ color: good ? C.teal : prog >= 50 ? C.amber : C.coral }}>
+          {Math.round(prog)}% עמידה ביעד
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Th({ children, k, sort, setSort }) {
+  const active = sort.key === k;
+  return (
+    <th onClick={() => setSort({ key: k, dir: active && sort.dir === "desc" ? "asc" : "desc" })}
+        style={{ cursor: "pointer", color: active ? C.amber : undefined }}>
+      {children}{active ? (sort.dir === "desc" ? " ▾" : " ▴") : ""}
+    </th>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  אפליקציה                                                            */
+/* ------------------------------------------------------------------ */
+
+export default function App() {
+  const [data, setData] = useState(DEMO);
+  const [prevSnap, setPrevSnap] = useState(null);
+  const [link, setLink] = useState("");
+  const [status, setStatus] = useState({ kind: "demo", msg: "מציג נתוני דוגמה מהדוח — חברו את הגיליון לעדכון יומי" });
+  const [showConnect, setShowConnect] = useState(false);
+  const [pasteMode, setPasteMode] = useState(false);
+  const [csvPaste, setCsvPaste] = useState("");
+  const [sort, setSort] = useState({ key: "spent", dir: "desc" });
+  const [drillOpen, setDrillOpen] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [story, setStory] = useState(false);
+  const [auction, setAuction] = useState(DEMO_AUCTION);
+  const [auctionDemo, setAuctionDemo] = useState(true);
+  const [auctionPaste, setAuctionPaste] = useState("");
+  const [showAuctionPaste, setShowAuctionPaste] = useState(false);
+  const [aiInsights, setAiInsights] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [activeMap, setActiveMap] = useState({});
+  const [shareModal, setShareModal] = useState(null);
+
+  const isActive = useCallback((name) => activeMap[name] !== false, [activeMap]);
+  const toggleActive = useCallback(async (name) => {
+    setActiveMap((prev) => {
+      const next = { ...prev, [name]: prev[name] === false };
+      store.set("peres:active", next);
+      return next;
+    });
+  }, []);
+
+  /* טעינת תמונת מצב — קודם מקישור משותף (hash), אחר כך מהאחסון */
+  useEffect(() => {
+    (async () => {
+      /* קישור משותף? */
+      try {
+        const hash = (window.location.hash || "").replace(/^#/, "");
+        const m = hash.match(/r=([\w\-_]+)/);
+        if (m) {
+          const st = decodeState(m[1]);
+          if (st && st.data) {
+            setData(st.data);
+            if (st.prev) setPrevSnap(st.prev);
+            if (st.auction) { setAuction(st.auction); setAuctionDemo(false); }
+            if (st.activeMap) setActiveMap(st.activeMap);
+            setUpdatedAt(st.savedAt ? new Date(st.savedAt) : null);
+            setStatus({ kind: "ok", msg: `נטענה תמונת מצב מקישור משותף${st.savedAt ? ` (${heDate(st.savedAt)})` : ""}` });
+            return;
+          }
+        }
+      } catch {}
+      const latest = await store.get("peres:latest");
+      const prev = await store.get("peres:previous");
+      const savedAuction = await store.get("peres:auction");
+      const savedActive = await store.get("peres:active");
+      if (savedActive) setActiveMap(savedActive);
+      if (latest && latest.data) {
+        setData(latest.data);
+        setUpdatedAt(new Date(latest.savedAt));
+        setStatus({ kind: "ok", msg: `נטענה תמונת המצב האחרונה שנשמרה (${heDate(latest.savedAt)})` });
+      }
+      if (prev) setPrevSnap(prev);
+      if (savedAuction) { setAuction(savedAuction); setAuctionDemo(false); }
+    })();
+  }, []);
+
+  const loadCsv = useCallback(async (text) => {
+    const parsed = parseReport(text);
+    if (parsed) {
+      const now = new Date().toISOString();
+      const latest = await store.get("peres:latest");
+      if (latest) { await store.set("peres:previous", latest); setPrevSnap(latest); }
+      await store.set("peres:latest", { savedAt: now, data: parsed });
+      setData(parsed);
+      setUpdatedAt(new Date(now));
+      setAiInsights(null);
+      setStatus({ kind: "ok", msg: latest ? "הנתונים נטענו — הדלתות מחושבות מול הדוח הקודם" : "הנתונים נטענו ונשמרו. בטעינה הבאה יוצגו דלתות מול הדוח הזה" });
+      setShowConnect(false);
+    } else {
+      setStatus({ kind: "err", msg: "לא זוהה מבנה הדוח בקובץ. ודאו שהלשונית הנכונה מקושרת (עם טבלאות פלטפורמה/קמפיין)." });
+    }
+  }, []);
+
+  const fetchSheet = useCallback(async () => {
+    const url = toCsvUrl(link);
+    if (!url) { setStatus({ kind: "err", msg: "הקישור לא זוהה כקישור Google Sheets תקין" }); return; }
+    setStatus({ kind: "load", msg: "טוען נתונים מהגיליון…" });
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(res.status);
+      loadCsv(await res.text());
+    } catch {
+      setStatus({
+        kind: "err",
+        msg: "לא ניתן לגשת לגיליון ישירות מכאן. פתרון: בגיליון בחרו קובץ ← שיתוף ← פרסום באינטרנט ← CSV, והדביקו את הקישור שנוצר. לחלופין — הדביקו את הנתונים ידנית למטה.",
+      });
+      setPasteMode(true);
+    }
+  }, [link, loadCsv]);
+
+  const totals = useMemo(() => {
+    const p = data.platforms;
+    const budget = p.reduce((s, x) => s + (x.budget || 0), 0);
+    const spent = p.reduce((s, x) => s + (x.spent || 0), 0);
+    return { budget, spent, util: budget ? (spent / budget) * 100 : 0 };
+  }, [data]);
+
+  const s = data.summary;
+
+  const delta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
+  const insights = useMemo(() => buildInsights(data, delta, isActive), [data, delta, isActive]);
+  const auctionRecs = useMemo(() => buildAuctionRecs(auction), [auction]);
+
+  const sortedPlatforms = useMemo(() => {
+    const arr = [...data.platforms];
+    arr.sort((a, b) => {
+      const va = a[sort.key], vb = b[sort.key];
+      if (va === null || va === undefined) return 1;
+      if (vb === null || vb === undefined) return -1;
+      return sort.dir === "desc" ? vb - va : va - vb;
+    });
+    return arr;
+  }, [data, sort]);
+
+  const pieData = useMemo(
+    () => data.platforms.filter((p) => p.spent > 0).map((p) => ({ name: p.name, value: p.spent })),
+    [data]
+  );
+  const barData = useMemo(
+    () => data.platforms.filter((p) => p.budget > 0 || p.spent > 0).map((p) => ({ name: p.name, "תקציב": p.budget, "מומש": p.spent })),
+    [data]
+  );
+
+  const runAiInsights = useCallback(async () => {
+    setAiLoading(true);
+    try {
+      const payload = {
+        summary: data.summary,
+        platforms: data.platforms.map((p) => ({ ...p, status: isActive(p.name) ? "active" : "paused_by_user" })),
+        searchCampaigns: data.campaigns.map((c) => ({ ...c, status: isActive(c.name) ? "active" : "paused_by_user" })),
+        deltaSincePreviousReport: delta,
+        auctionInsights: auctionDemo ? null : auction,
+        note: "קמפיינים במצב paused_by_user כבויים כרגע — אל תמליץ עליהם המלצות אופטימיזציה שוטפות; מותר רק להמליץ להפעיל אותם מחדש אם הביצועים ההיסטוריים מצדיקים",
+      };
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: `אתה אנליסט PPC בכיר. לפניך נתוני דוח לידים של מוסד אקדמי (בש"ח). החזר אך ורק מערך JSON של 4-5 מחרוזות בעברית — תובנות חדות ואופרטיביות (מה לעשות מחר בבוקר), בלי הקדמות ובלי Markdown. נתונים: ${JSON.stringify(payload)}`,
+          }],
+        }),
+      });
+      const d = await res.json();
+      const text = (d.content || []).map((i) => i.text || "").join("");
+      const arr = JSON.parse(text.replace(/```json|```/g, "").trim());
+      if (Array.isArray(arr)) setAiInsights(arr);
+      else throw new Error();
+    } catch {
+      setAiInsights(["לא הצלחתי להפיק תובנות AI כרגע — נסו שוב בעוד רגע."]);
+    }
+    setAiLoading(false);
+  }, [data, delta, auction, auctionDemo, isActive]);
+
+  const loadAuction = useCallback(async () => {
+    const parsed = parseAuction(auctionPaste);
+    if (parsed) {
+      setAuction(parsed); setAuctionDemo(false); setShowAuctionPaste(false);
+      await store.set("peres:auction", parsed);
+    }
+  }, [auctionPaste]);
+
+  /* ---------- שיתוף ---------- */
+  const buildShareLink = useCallback(() => {
+    const state = {
+      v: 1,
+      savedAt: (updatedAt || new Date()).toISOString(),
+      data,
+      prev: prevSnap,
+      auction: auctionDemo ? null : auction,
+      activeMap,
+    };
+    return currentBaseUrl() + "#r=" + encodeState(state);
+  }, [data, prevSnap, auction, auctionDemo, activeMap, updatedAt]);
+
+  const shareOut = useCallback(async (title, text, withLink = true) => {
+    const url = withLink ? buildShareLink() : null;
+    try {
+      if (navigator.share) { await navigator.share(url ? { title, text, url } : { title, text }); return; }
+    } catch (e) {
+      if (e && e.name === "AbortError") return; /* המשתמש ביטל — לא שגיאה */
+    }
+    let copied = false;
+    const toCopy = url || text;
+    try { await navigator.clipboard.writeText(toCopy); copied = true; } catch {}
+    if (!copied) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = toCopy;
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        copied = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {}
+    }
+    setShareModal({ title, text, url, copied });
+  }, [buildShareLink]);
+
+  const shareDashboard = useCallback(() => {
+    const d = new Date().toLocaleDateString("he-IL", { day: "numeric", month: "long" });
+    const lines = [
+      `📊 המרכז האקדמי פרס · דשבורד יומי · ${d}`,
+      ``,
+      `💰 תקציב: ${nis(totals.spent)} מתוך ${nis(totals.budget)} (${Math.round(totals.util)}%)`,
+      `📥 לידים ברוטו: ${num(s.actual.gross)} / יעד ${num(s.target.gross)} (${Math.round((s.actual.gross / s.target.gross) * 100)}%) · ${nis(s.actual.cpl)} לליד`,
+      `⭐ איכותיים: ${num(s.actual.quality)} / יעד ${num(s.target.quality)} (${Math.round((s.actual.quality / s.target.quality) * 100)}%) · ${nis(s.actual.cpql)} לליד · ${pct(s.actual.qualityPct)} איכות`,
+      `⏳ בתהליך: ${num(s.actual.inProcess)} לידים`,
+    ];
+    if (delta) {
+      lines.push(``, `🔄 מאז הדוח הקודם (${heDate(delta.date)}):`);
+      if (delta.summary.spent) lines.push(`   מומש: ${nis(delta.summary.spent)}+`);
+      if (delta.summary.gross) lines.push(`   לידים חדשים: ${num(delta.summary.gross)}+`);
+      if (delta.summary.quality) lines.push(`   איכותיים חדשים: ${num(delta.summary.quality)}+`);
+    }
+    const top3 = [...data.platforms].sort((a, b) => (b.spent || 0) - (a.spent || 0)).slice(0, 3);
+    lines.push(``, `🏗️ הכלים המובילים במימוש:`);
+    top3.forEach((p) => lines.push(`   ${p.name}: ${nis(p.spent)} · ${num(p.gross)} לידים · ${num(p.quality)} איכותיים`));
+    if (insights.length) lines.push(``, `💡 ${insights[0].text}`);
+    shareOut("דשבורד יומי — המרכז האקדמי פרס", lines.join("\n"));
+  }, [data, totals, delta, insights, s, shareOut]);
+
+  const shareStory = useCallback(() => {
+    const slides = buildSlides(data, totals, delta, insights, isActive);
+    const lines = [`⚡ הסטורי היומי · המרכז האקדמי פרס · ${new Date().toLocaleDateString("he-IL")}`, ``];
+    slides.forEach((sl) => {
+      lines.push(`◾ ${sl.kicker}: ${sl.big}`);
+      if (sl.text) lines.push(`   ${sl.text}`);
+      (sl.rows || []).forEach((r) => lines.push(`   • ${r.label}: ${r.value}`));
+      lines.push(``);
+    });
+    shareOut("הסטורי היומי — המרכז האקדמי פרס", lines.join("\n"));
+  }, [data, totals, delta, insights, isActive, shareOut]);
+
+  return (
+    <div dir="rtl" className="root">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;700;900&display=swap');
+        * { box-sizing: border-box; margin: 0; }
+        .root { min-height: 100vh; background: ${C.bg}; color: ${C.text}; font-family: 'Heebo', system-ui, sans-serif; padding: 24px clamp(12px, 3vw, 40px) 60px; font-feature-settings: 'tnum'; }
+        .head { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; justify-content:space-between; margin-bottom: 6px; }
+        h1 { font-size: clamp(20px, 2.6vw, 30px); font-weight: 900; letter-spacing: -0.5px; }
+        h1 span { color: ${C.amber}; }
+        .sub { color: ${C.dim}; font-size: 13px; margin-top: 4px; }
+        .btn { background: ${C.amber}; color:#1a1206; border:none; border-radius:10px; padding:9px 18px; font-family:inherit; font-weight:700; font-size:14px; cursor:pointer; }
+        .btn:hover { filter: brightness(1.08); }
+        .btn.ghost { background:transparent; color:${C.dim}; border:1px solid ${C.line}; }
+        .btn.story-btn { background: linear-gradient(90deg, ${C.violet}, ${C.blue}); color:#fff; }
+        .btn:disabled { opacity:.5; cursor:default; }
+        .status { font-size:13px; padding:8px 14px; border-radius:10px; margin:14px 0 20px; border:1px solid ${C.line}; background:${C.panel}; color:${C.dim}; }
+        .status.err { border-color:${C.coral}; color:${C.coral}; }
+        .status.ok { border-color:${C.teal}; color:${C.teal}; }
+        .connect { background:${C.panel}; border:1px solid ${C.line}; border-radius:14px; padding:18px; margin-bottom:22px; }
+        .connect input, .connect textarea, .auction-paste textarea { width:100%; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:10px; padding:10px 12px; font-family:inherit; font-size:14px; margin:8px 0; direction:ltr; }
+        .connect textarea, .auction-paste textarea { min-height:110px; font-size:12px; }
+        .grid-kpi { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:14px; margin-bottom:26px; }
+        .kpi { background:${C.panel}; border:1px solid ${C.line}; border-radius:14px; padding:16px 18px 14px; }
+        .kpi-title { color:${C.dim}; font-size:13px; font-weight:500; }
+        .kpi-value { font-size:28px; font-weight:900; margin:4px 0 2px; letter-spacing:-0.5px; display:flex; align-items:baseline; flex-wrap:wrap; }
+        .kpi-target { color:${C.dim}; font-size:12px; }
+        .kpi-bar-wrap { position:relative; height:6px; background:${C.panelSoft}; border-radius:4px; margin-top:12px; overflow:hidden; }
+        .kpi-bar { height:100%; border-radius:4px; transition:width .6s ease; }
+        .kpi-goal-line { position:absolute; top:-2px; bottom:-2px; width:2px; background:${C.text}; opacity:.55; }
+        .kpi-pct { font-size:12px; font-weight:700; margin-top:6px; }
+        .two-col { display:grid; grid-template-columns: 1.4fr 1fr; gap:16px; margin-bottom:26px; }
+        @media (max-width: 900px){ .two-col { grid-template-columns:1fr; } }
+        .panel { background:${C.panel}; border:1px solid ${C.line}; border-radius:14px; padding:18px; }
+        .panel h2 { font-size:16px; font-weight:700; margin-bottom:4px; }
+        .panel .hint { color:${C.dim}; font-size:12px; margin-bottom:12px; }
+        table { width:100%; border-collapse:collapse; font-size:13.5px; }
+        th { text-align:right; color:${C.dim}; font-weight:500; font-size:12px; padding:8px 10px; border-bottom:1px solid ${C.line}; white-space:nowrap; user-select:none; }
+        td { padding:9px 10px; border-bottom:1px solid ${C.panelSoft}; white-space:nowrap; }
+        tr.click { cursor:pointer; }
+        tr.click:hover td { background:${C.panelSoft}; }
+        .qdot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-left:6px; vertical-align:middle; }
+        .util-cell { display:flex; align-items:center; gap:8px; }
+        .util-track { flex:1; min-width:70px; height:5px; background:${C.panelSoft}; border-radius:3px; overflow:hidden; }
+        .util-fill { height:100%; border-radius:3px; }
+        .tag { font-size:11px; background:${C.panelSoft}; color:${C.amber}; border-radius:6px; padding:2px 8px; margin-right:8px; font-weight:700; }
+        .drill { margin-top:-10px; margin-bottom:26px; border:1px solid ${C.line}; border-top:none; border-radius:0 0 14px 14px; background:${C.panelSoft}; padding:14px 18px 18px; }
+        .table-wrap { overflow-x:auto; }
+        .foot { color:${C.dim}; font-size:12px; text-align:center; margin-top:30px; }
+        .legend { display:flex; flex-direction:column; gap:7px; font-size:12.5px; max-height:300px; overflow:auto; }
+        .legend-row { display:flex; align-items:center; gap:8px; }
+        .legend-dot { width:10px; height:10px; border-radius:3px; flex-shrink:0; }
+        .legend-name { flex:1; color:${C.text}; }
+        .legend-val { color:${C.dim}; }
+        .pie-flex { display:flex; gap:14px; align-items:center; }
+        @media (max-width:600px){ .pie-flex { flex-direction:column; } }
+        .insight-list { display:flex; flex-direction:column; gap:10px; }
+        .insight { display:flex; gap:12px; align-items:flex-start; background:${C.panelSoft}; border-radius:12px; padding:12px 14px; font-size:14px; line-height:1.55; border-right:3px solid ${C.line}; }
+        .insight.good { border-right-color:${C.teal}; }
+        .insight.bad { border-right-color:${C.coral}; }
+        .insight.warn { border-right-color:${C.amber}; }
+        .insight .ico { font-size:18px; line-height:1.3; }
+        .ai-box { margin-top:14px; border-top:1px dashed ${C.line}; padding-top:14px; }
+        .auction-you td { background: rgba(245,184,65,.07); font-weight:700; }
+        .story-overlay { position:fixed; inset:0; background:rgba(5,10,20,.85); backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center; z-index:100; }
+        .story-card { position:relative; width:min(430px, 94vw); height:min(760px, 92vh); border-radius:22px; border:1px solid ${C.line}; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+        .story-progress { display:flex; gap:5px; padding:14px 16px 0; }
+        .story-seg { flex:1; height:3px; background:rgba(255,255,255,.18); border-radius:2px; overflow:hidden; }
+        .story-seg-fill { height:100%; background:#fff; }
+        @keyframes fill { from { width:0%; } to { width:100%; } }
+        .story-seg-fill[data-active="1"] { animation: fill 8s linear forwards; }
+        .story-close { position:absolute; top:24px; left:16px; background:rgba(255,255,255,.12); border:none; color:#fff; width:32px; height:32px; border-radius:50%; cursor:pointer; font-size:14px; z-index:3; }
+        .story-actions { position:absolute; top:24px; right:16px; display:flex; gap:8px; z-index:3; }
+        .story-share { background:rgba(255,255,255,.12); border:none; color:#fff; height:32px; padding:0 14px; border-radius:16px; cursor:pointer; font-size:13px; font-family:inherit; font-weight:700; }
+        .story-share:hover { background:rgba(255,255,255,.22); }
+        .story-paused-tag { position:absolute; top:64px; right:16px; z-index:3; font-size:11.5px; color:${C.amber}; background:rgba(245,184,65,.12); border:1px solid rgba(245,184,65,.4); border-radius:8px; padding:3px 10px; }
+        .switch { border:none; border-radius:12px; padding:3px 10px; font-family:inherit; font-size:11px; font-weight:900; cursor:pointer; margin-left:8px; vertical-align:middle; }
+        .switch.on { background:rgba(55,201,169,.15); color:${C.teal}; border:1px solid rgba(55,201,169,.45); }
+        .switch.off { background:rgba(240,104,95,.13); color:${C.coral}; border:1px solid rgba(240,104,95,.45); }
+        .share-overlay { position:fixed; inset:0; background:rgba(5,10,20,.8); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:200; padding:16px; }
+        .share-modal { background:${C.panel}; border:1px solid ${C.line}; border-radius:16px; padding:18px; width:min(560px, 96vw); display:flex; flex-direction:column; gap:12px; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+        .share-head { display:flex; justify-content:space-between; align-items:center; }
+        .share-copied { font-size:13px; font-weight:700; }
+        .share-text { width:100%; min-height:180px; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:10px; padding:12px; font-family:inherit; font-size:13px; line-height:1.6; resize:vertical; direction:rtl; }
+        .share-link-row { display:flex; gap:8px; }
+        .share-link { flex:1; background:${C.bg}; border:1px solid ${C.line}; color:${C.blue}; border-radius:10px; padding:10px 12px; font-size:12px; font-family:monospace; min-width:0; }
+        .story-rows { display:flex; flex-direction:column; gap:10px; margin-top:4px; }
+        .story-row { display:flex; flex-direction:column; gap:2px; background:rgba(255,255,255,.05); border:1px solid ${C.line}; border-radius:12px; padding:10px 14px; }
+        .story-row-label { color:${C.dim}; font-size:12.5px; font-weight:700; }
+        .story-row-value { font-size:15.5px; font-weight:700; line-height:1.4; }
+        .story-body { flex:1; display:flex; flex-direction:column; justify-content:center; padding:14px 30px 30px; gap:14px; text-align:right; overflow-y:auto; }
+        .story-kicker { color:${C.dim}; font-size:15px; font-weight:700; letter-spacing:.5px; }
+        .story-big { font-size:clamp(34px, 8vw, 52px); font-weight:900; letter-spacing:-1px; line-height:1.05; }
+        .story-text { font-size:19px; line-height:1.55; color:${C.text}; }
+        .story-foot { font-size:13px; color:${C.dim}; border-top:1px solid ${C.line}; padding-top:12px; }
+        .story-nav { position:absolute; top:0; bottom:0; width:38%; z-index:2; cursor:pointer; }
+        .story-nav.prev { right:0; } .story-nav.next { left:0; }
+        .story-count { position:absolute; bottom:14px; left:0; right:0; text-align:center; color:${C.dim}; font-size:12px; }
+        @media (prefers-reduced-motion: reduce){ .kpi-bar{ transition:none; } .story-seg-fill[data-active="1"]{ animation:none; width:30%; } }
+      `}</style>
+
+      {/* ---------- כותרת ---------- */}
+      <div className="head">
+        <div>
+          <h1>המרכז האקדמי פרס · <span>דשבורד יומי</span></h1>
+          <div className="sub">
+            {updatedAt ? `עודכן לאחרונה: ${heDate(updatedAt)}` : "מקור: דוח ריכוז נתונים — Google Sheets"}
+            {delta && ` · דלתות מול הדוח מ־${heDate(delta.date)}`}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button className="btn story-btn" onClick={() => setStory(true)}>▶ הסטורי היומי</button>
+          <button className="btn ghost" onClick={shareDashboard}>📤 שיתוף הדשבורד</button>
+          {status.kind === "ok" && link && <button className="btn ghost" onClick={fetchSheet}>רענון ⟳</button>}
+          <button className="btn" onClick={() => setShowConnect((v) => !v)}>
+            {showConnect ? "סגירה" : "חיבור הגיליון"}
+          </button>
+        </div>
+      </div>
+
+      <div className={`status ${status.kind === "err" ? "err" : status.kind === "ok" ? "ok" : ""}`}>{status.msg}</div>
+
+      {/* ---------- חיבור גיליון ---------- */}
+      {showConnect && (
+        <div className="connect">
+          <strong>הדביקו את הקישור לדוח</strong>
+          <div style={{ color: C.dim, fontSize: 12, marginTop: 4 }}>
+            כדי שהדשבורד יוכל לקרוא את הגיליון: בגיליון בחרו <b>קובץ ← שיתוף ← פרסום באינטרנט</b>, בחרו את הלשונית ופורמט <b>CSV</b>, והדביקו כאן את הקישור. כל טעינה נשמרת כתמונת מצב, והטעינה הבאה תציג דלתות מולה.
+          </div>
+          <input placeholder="https://docs.google.com/spreadsheets/d/..." value={link} onChange={(e) => setLink(e.target.value)} />
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn" onClick={fetchSheet}>טעינה מהקישור</button>
+            <button className="btn ghost" onClick={() => setPasteMode((v) => !v)}>הדבקת נתונים ידנית</button>
+          </div>
+          {pasteMode && (
+            <>
+              <div style={{ color: C.dim, fontSize: 12, marginTop: 12 }}>
+                לחלופין: בגיליון בחרו קובץ ← הורדה ← CSV, פתחו את הקובץ והדביקו את התוכן כאן.
+              </div>
+              <textarea placeholder="הדביקו כאן את תוכן ה-CSV..." value={csvPaste} onChange={(e) => setCsvPaste(e.target.value)} />
+              <button className="btn" onClick={() => loadCsv(csvPaste)}>טעינת הנתונים</button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ---------- KPI ---------- */}
+      <div className="grid-kpi">
+        <KpiCard title="מימוש תקציב כולל" actual={totals.spent} target={totals.budget} format={(v) => nis(v)}
+                 sub={`${Math.round(totals.util)}% מומש`} delta={delta?.summary.spent} deltaMoney />
+        <KpiCard title="לידים ברוטו" actual={s.actual.gross} target={s.target.gross} format={num} delta={delta?.summary.gross} />
+        <KpiCard title="לידים איכותיים" actual={s.actual.quality} target={s.target.quality} format={num} delta={delta?.summary.quality} />
+        <KpiCard title="% לידים איכותיים" actual={s.actual.qualityPct} target={s.target.qualityPct} format={(v) => pct(v)}
+                 delta={delta?.summary.qualityPct} deltaSuffix=" נק'" />
+        <KpiCard title="עלות לליד ברוטו" actual={s.actual.cpl} target={s.target.cpl} format={(v) => nis(v)} inverse delta={delta?.summary.cpl} deltaMoney />
+        <KpiCard title="עלות לליד איכותי" actual={s.actual.cpql} target={s.target.cpql} format={(v) => nis(v)} inverse delta={delta?.summary.cpql} deltaMoney />
+      </div>
+
+      {/* ---------- תובנות ---------- */}
+      <div className="panel" style={{ marginBottom: 26 }}>
+        <h2>💡 תובנות</h2>
+        <div className="hint">מחושבות אוטומטית מהנתונים{delta ? " כולל דלתות מול הדוח הקודם" : ""} · ניתן להעמיק עם ניתוח AI</div>
+        <div className="insight-list">
+          {insights.map((ins, i) => (
+            <div key={i} className={`insight ${ins.tone}`}>
+              <span className="ico">{ins.icon}</span><span>{ins.text}</span>
+            </div>
+          ))}
+        </div>
+        <div className="ai-box">
+          <button className="btn ghost" onClick={runAiInsights} disabled={aiLoading}>
+            {aiLoading ? "מנתח…" : "✨ ניתוח מעמיק עם AI"}
+          </button>
+          {aiInsights && (
+            <div className="insight-list" style={{ marginTop: 12 }}>
+              {aiInsights.map((t, i) => (
+                <div key={i} className="insight warn"><span className="ico">✨</span><span>{t}</span></div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ---------- גרפים ---------- */}
+      <div className="two-col">
+        <div className="panel">
+          <h2>תקציב מול מימוש לפי כלי</h2>
+          <div className="hint">₪ — עמודה כהה: תקציב · עמודה צהובה: מומש בפועל</div>
+          <div style={{ width: "100%", height: 360, direction: "ltr" }}>
+            <ResponsiveContainer>
+              <BarChart data={barData} layout="vertical" margin={{ top: 0, right: 6, left: 6, bottom: 0 }}>
+                <CartesianGrid stroke={C.panelSoft} horizontal={false} />
+                <XAxis type="number" tick={{ fill: C.dim, fontSize: 11 }} tickFormatter={(v) => "₪" + (v / 1000) + "K"} reversed />
+                <YAxis type="category" dataKey="name" orientation="right" width={155}
+                       tick={{ fill: C.text, fontSize: 11.5 }} tickMargin={8} interval={0} />
+                <Tooltip
+                  contentStyle={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text }}
+                  labelStyle={{ color: C.text, fontWeight: 700 }} itemStyle={{ color: C.text }}
+                  formatter={(v) => nis(v)}
+                />
+                <Bar dataKey="תקציב" fill={C.panelSoft} stroke={C.line} radius={[4, 0, 0, 4]} barSize={10} />
+                <Bar dataKey="מומש" fill={C.amber} radius={[4, 0, 0, 4]} barSize={10} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="panel">
+          <h2>התפלגות ההוצאה בין הכלים</h2>
+          <div className="hint">נתח מתוך {nis(totals.spent)} שמומשו עד כה</div>
+          <div className="pie-flex">
+            <div style={{ width: 210, height: 260, flexShrink: 0, direction: "ltr" }}>
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={2} stroke={C.bg}>
+                    {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text }}
+                    labelStyle={{ color: C.text, fontWeight: 700 }} itemStyle={{ color: C.text, fontWeight: 700 }}
+                    formatter={(v, n) => [`${nis(v)} · ${Math.round((v / totals.spent) * 100)}%`, n]}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="legend">
+              {pieData.map((p, i) => (
+                <div className="legend-row" key={p.name}>
+                  <span className="legend-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                  <span className="legend-name">{p.name}</span>
+                  <span className="legend-val">{nis(p.value)} · {Math.round((p.value / totals.spent) * 100)}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ---------- טבלת כלים ---------- */}
+      <div className="panel" style={{ borderRadius: drillOpen ? "14px 14px 0 0" : 14 }}>
+        <h2>ביצועים לפי כלי (BOF)</h2>
+        <div className="hint">לחיצה על כותרת ממיינת · לחיצה על שורת "חיפוש" פותחת דריל־דאון · חצים ירוקים/אדומים = שינוי מאז הדוח הקודם</div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>כלי</th>
+                <Th k="budget" sort={sort} setSort={setSort}>תקציב</Th>
+                <Th k="spent" sort={sort} setSort={setSort}>מומש</Th>
+                <th>% מימוש</th>
+                <Th k="gross" sort={sort} setSort={setSort}>לידים ברוטו</Th>
+                <Th k="cpl" sort={sort} setSort={setSort}>עלות לליד</Th>
+                <Th k="quality" sort={sort} setSort={setSort}>לידים איכותיים</Th>
+                <Th k="cpql" sort={sort} setSort={setSort}>עלות לליד איכותי</Th>
+                <Th k="qPct" sort={sort} setSort={setSort}>% איכות</Th>
+                <Th k="inProc" sort={sort} setSort={setSort}>בתהליך</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedPlatforms.map((p) => {
+                const util = p.budget ? (p.spent / p.budget) * 100 : null;
+                const pd = delta?.platforms[p.name];
+                const on = isActive(p.name);
+                return (
+                  <tr key={p.name} className={p.drill ? "click" : ""} style={{ opacity: on ? 1 : 0.45 }}
+                      onClick={() => p.drill && setDrillOpen((v) => !v)}>
+                    <td style={{ fontWeight: 700 }}>
+                      <button className={`switch ${on ? "on" : "off"}`} title={on ? "סמנו ככבוי כדי להתעלם ממנו בתובנות" : "מסומן ככבוי — לא נכלל בהתראות"}
+                              onClick={(e) => { e.stopPropagation(); toggleActive(p.name); }}>
+                        {on ? "פעיל" : "כבוי"}
+                      </button>
+                      {p.name}{p.drill && <span className="tag">{drillOpen ? "דריל־דאון ▴" : "דריל־דאון ▾"}</span>}
+                    </td>
+                    <td>{p.budget ? nis(p.budget) : "—"}</td>
+                    <td style={{ fontWeight: 700 }}>{nis(p.spent)}{pd && <Delta v={pd.spent} money inverse />}</td>
+                    <td>
+                      <div className="util-cell">
+                        <div className="util-track">
+                          <div className="util-fill" style={{ width: `${Math.min(util ?? 0, 100)}%`, background: util > 90 ? C.coral : C.blue }} />
+                        </div>
+                        <span style={{ color: C.dim, fontSize: 12, minWidth: 34 }}>{util === null ? "—" : Math.round(util) + "%"}</span>
+                      </div>
+                    </td>
+                    <td>{num(p.gross)}{pd && <Delta v={pd.gross} />}</td>
+                    <td>{nis(p.cpl)}</td>
+                    <td style={{ fontWeight: 700, color: C.teal }}>{num(p.quality)}{pd && <Delta v={pd.quality} />}</td>
+                    <td>{nis(p.cpql)}</td>
+                    <td><span className="qdot" style={{ background: qualityColor(p.qPct) }} />{pct(p.qPct, 1)}</td>
+                    <td>{num(p.inProc)}{p.inProcPct !== null && p.inProcPct !== undefined ? ` (${pct(p.inProcPct)})` : ""}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ---------- דריל-דאון חיפוש ---------- */}
+      {drillOpen && (
+        <div className="drill">
+          <h2 style={{ fontSize: 15, fontWeight: 700, margin: "4px 0 2px" }}>דריל־דאון · קמפייני גוגל חיפוש</h2>
+          <div style={{ color: C.dim, fontSize: 12, marginBottom: 10 }}>פירוט הקמפיינים המרכיבים את כלי החיפוש, כולל מקורות אורגניים (GMB / callbox / Direct)</div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>קמפיין</th><th>מומש</th><th>נתח מעלות החיפוש</th><th>לידים ברוטו</th><th>עלות לליד</th>
+                  <th>לידים איכותיים</th><th>עלות לליד איכותי</th><th>% איכות</th><th>בתהליך</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.campaigns.map((cmp) => {
+                  const on = isActive(cmp.name);
+                  return (
+                    <tr key={cmp.name} style={{ opacity: on ? 1 : 0.45 }}>
+                      <td style={{ fontWeight: 700 }}>
+                        <button className={`switch ${on ? "on" : "off"}`} title={on ? "סמנו ככבוי כדי להתעלם ממנו בתובנות" : "מסומן ככבוי — לא נכלל בהתראות"}
+                                onClick={() => toggleActive(cmp.name)}>
+                          {on ? "פעיל" : "כבוי"}
+                        </button>
+                        {cmp.name}
+                      </td>
+                      <td>{nis(cmp.spent)}</td>
+                      <td>{pct(cmp.share)}</td>
+                      <td>{num(cmp.gross)}</td>
+                      <td>{nis(cmp.cpl)}</td>
+                      <td style={{ fontWeight: 700, color: C.teal }}>{num(cmp.quality)}</td>
+                      <td>{nis(cmp.cpql)}</td>
+                      <td><span className="qdot" style={{ background: qualityColor(cmp.qPct) }} />{pct(cmp.qPct, 1)}</td>
+                      <td>{num(cmp.inProc)}{cmp.inProcPct !== null && cmp.inProcPct !== undefined ? ` (${pct(cmp.inProcPct)})` : ""}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Auction Insights ---------- */}
+      <div className="panel" style={{ marginBottom: 26, marginTop: drillOpen ? 0 : 26 }}>
+        <h2>⚔️ Auction Insights · מפת התחרות בחיפוש</h2>
+        <div className="hint">
+          {auctionDemo ? "נתוני דוגמה להמחשה — הדביקו ייצוא Auction Insights מגוגל אדס לנתונים אמיתיים" : "נתונים שהודבקו מגוגל אדס"}
+          {" · "}
+          <a style={{ color: C.blue, cursor: "pointer" }} onClick={() => setShowAuctionPaste((v) => !v)}>
+            {showAuctionPaste ? "סגירה" : "עדכון נתונים"}
+          </a>
+        </div>
+        {showAuctionPaste && (
+          <div className="auction-paste" style={{ marginBottom: 14 }}>
+            <div style={{ color: C.dim, fontSize: 12 }}>
+              בגוגל אדס: קמפיינים ← Auction Insights ← הורדה/העתקה, והדביקו כאן (כולל שורת כותרות).
+            </div>
+            <textarea value={auctionPaste} onChange={(e) => setAuctionPaste(e.target.value)} placeholder="Display URL domain	Impression share	Overlap rate	Position above rate	Top of page rate	Outranking share..." />
+            <button className="btn" onClick={loadAuction}>טעינה</button>
+          </div>
+        )}
+        <div className="table-wrap" style={{ marginBottom: 16 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>דומיין</th><th>נתח חשיפות</th><th>שיעור חפיפה</th><th>מופיע מעליכם</th><th>ראש העמוד</th><th>Outranking</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auction.map((r) => (
+                <tr key={r.domain} className={r.you ? "auction-you" : ""}>
+                  <td style={{ fontWeight: r.you ? 900 : 500 }}>{r.domain}</td>
+                  <td>
+                    <div className="util-cell">
+                      <div className="util-track"><div className="util-fill" style={{ width: `${r.is ?? 0}%`, background: r.you ? C.amber : C.blue }} /></div>
+                      <span style={{ color: C.dim, fontSize: 12, minWidth: 34 }}>{pct(r.is)}</span>
+                    </div>
+                  </td>
+                  <td>{pct(r.overlap)}</td>
+                  <td style={{ color: r.above > 30 ? C.coral : undefined }}>{pct(r.above)}</td>
+                  <td>{pct(r.top)}</td>
+                  <td style={{ color: r.outrank !== null ? (r.outrank >= 60 ? C.teal : C.coral) : undefined }}>{pct(r.outrank)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <h2 style={{ fontSize: 14 }}>המלצות</h2>
+        <div className="insight-list" style={{ marginTop: 8 }}>
+          {auctionRecs.map((r, i) => (
+            <div key={i} className="insight"><span className="ico">{r.icon}</span><span>{r.text}</span></div>
+          ))}
+        </div>
+      </div>
+
+      <div className="foot">
+        ירוק = איכות ≥10% · צהוב = 6–10% · אדום = מתחת ל־6% · הקו הלבן בכרטיסי היעד מסמן 100% עמידה ביעד · ▲▼ = שינוי מאז הדוח הקודם
+      </div>
+
+      {story && <StoryMode slides={buildSlides(data, totals, delta, insights, isActive)} onClose={() => setStory(false)} onShare={shareStory} />}
+
+      {/* ---------- חלון שיתוף ---------- */}
+      {shareModal && (
+        <div className="share-overlay" onClick={() => setShareModal(null)}>
+          <div className="share-modal" dir="rtl" onClick={(e) => e.stopPropagation()}>
+            <div className="share-head">
+              <strong>{shareModal.title}</strong>
+              <button className="story-close" style={{ position: "static" }} onClick={() => setShareModal(null)}>✕</button>
+            </div>
+            {shareModal.url && (
+              <>
+                <div className="share-copied" style={{ color: shareModal.copied ? C.teal : C.dim }}>
+                  {shareModal.copied ? "✓ הקישור הועתק ללוח — מי שיפתח אותו יראה בדיוק את תמונת המצב הזו" : "🔗 קישור לדשבורד עם הנתונים הנוכחיים:"}
+                </div>
+                <div className="share-link-row">
+                  <input className="share-link" readOnly value={shareModal.url} onFocus={(e) => e.target.select()} dir="ltr" />
+                  <button className="btn" onClick={async () => {
+                    let ok = false;
+                    try { await navigator.clipboard.writeText(shareModal.url); ok = true; } catch {}
+                    if (!ok) {
+                      const inp = document.querySelector(".share-link");
+                      if (inp) { inp.focus(); inp.select(); try { ok = document.execCommand("copy"); } catch {} }
+                    }
+                    setShareModal({ ...shareModal, copied: ok });
+                  }}>🔗 העתקת קישור</button>
+                </div>
+                <div style={{ color: C.dim, fontSize: 12 }}>
+                  הקישור מכיל את הנתונים עצמם — הוא יעבוד לכל מי שיש לו גישה לכתובת שבה הדשבורד מפורסם, גם בלי גישה לגיליון.
+                </div>
+              </>
+            )}
+            <div className="share-copied" style={{ color: C.dim, marginTop: shareModal.url ? 6 : 0 }}>או סיכום טקסט להדבקה:</div>
+            <textarea className="share-text" readOnly value={shareModal.text} onFocus={(e) => e.target.select()} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="btn ghost" onClick={async () => {
+                let ok = false;
+                try { await navigator.clipboard.writeText(shareModal.text); ok = true; } catch {}
+                if (!ok) {
+                  const ta = document.querySelector(".share-text");
+                  if (ta) { ta.focus(); ta.select(); try { ok = document.execCommand("copy"); } catch {} }
+                }
+                setShareModal({ ...shareModal, copied: ok });
+              }}>📋 העתקת הסיכום</button>
+              <button className="btn ghost" onClick={() => setShareModal(null)}>סגירה</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
