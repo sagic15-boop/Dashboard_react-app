@@ -40,7 +40,6 @@ const DEMO = {
   ],
 };
 
-/* נתוני דוגמה לביצועי יממה — מוצגים רק עד שנשמרות שתי תמונות מצב אמיתיות */
 const DEMO_DAY = [
   { name: "PMAX",               type: "כלי",   spent: 2450, gross: 14, quality: 1 },
   { name: "חיפוש",              type: "כלי",   spent: 980,  gross: 31, quality: 3 },
@@ -71,9 +70,18 @@ const heDate = (d) => new Date(d).toLocaleDateString("he-IL", { day: "numeric", 
   new Date(d).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 
 const store = {
-  async get(k) { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } },
-  async set(k, v) { try { await window.storage.set(k, JSON.stringify(v)); } catch {} },
-  async list(prefix) { try { const r = await window.storage.list(prefix); return (r && r.keys) || []; } catch { return []; } },
+  async get(k) { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null; } catch { return null; } },
+  async set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  async list(prefix) { 
+    try { 
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key.startsWith(prefix)) keys.push(key);
+      }
+      return keys;
+    } catch { return []; } 
+  },
 };
 
 /* מפתחות ארכיון יומי: peres:day:YYYY-MM-DD */
@@ -194,7 +202,6 @@ function toCsvUrl(link) {
   return `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv&gid=${gid}`;
 }
 
-/* קידוד/פענוח מצב הדשבורד לתוך קישור (hash) — הקישור נושא את הנתונים עצמם */
 const encodeState = (obj) =>
   btoa(unescape(encodeURIComponent(JSON.stringify(obj)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const decodeState = (s) =>
@@ -204,10 +211,6 @@ function currentBaseUrl() {
   try { return window.top.location.href.split("#")[0]; } catch {}
   return window.location.href.split("#")[0];
 }
-
-/* ------------------------------------------------------------------ */
-/*  דלתא בין דוחות                                                      */
-/* ------------------------------------------------------------------ */
 
 function computeDelta(curr, prev) {
   if (!prev || !prev.data) return null;
@@ -251,10 +254,6 @@ const Delta = ({ v, inverse, suffix = "", money }) => {
   );
 };
 
-/* ------------------------------------------------------------------ */
-/*  תובנות אוטומטיות                                                    */
-/* ------------------------------------------------------------------ */
-
 function buildInsights(data, delta, isActive = () => true) {
   const out = [];
   const P = data.platforms.filter((p) => (p.spent || 0) > 1000 && isActive(p.name));
@@ -268,7 +267,6 @@ function buildInsights(data, delta, isActive = () => true) {
   }
   const burned = P.filter((p) => (p.spent || 0) > 3000 && (p.quality || 0) === 0);
   burned.forEach((p) => out.push({ icon: "🔻", tone: "bad", text: `${p.name} שרף ${nis(p.spent)} בלי ליד איכותי אחד — לעצור ולבדוק לפני המשך השקעה.` }));
-  /* כלים כבויים — או להתעלם, או להמליץ להפעיל אם היו יעילים */
   const inactiveGood = data.platforms.filter((p) => !isActive(p.name) && (p.quality || 0) >= 2 && p.cpql);
   inactiveGood.sort((a, b) => a.cpql - b.cpql).slice(0, 2).forEach((p) =>
     out.push({ icon: "💤", tone: "warn", text: `${p.name} מסומן ככבוי, אבל היסטורית הביא ${num(p.quality)} לידים איכותיים ב־${nis(p.cpql)} לליד — שווה לשקול הפעלה מחדש.` })
@@ -303,10 +301,6 @@ function buildInsights(data, delta, isActive = () => true) {
   return out.slice(0, 7);
 }
 
-/* ------------------------------------------------------------------ */
-/*  צבעים                                                               */
-/* ------------------------------------------------------------------ */
-
 const C = {
   bg: "#0D1626", panel: "#152238", panelSoft: "#1B2B45", line: "#26395A",
   text: "#E9EFFA", dim: "#8FA3C2",
@@ -320,10 +314,6 @@ const qualityColor = (p) => {
   if (p >= 6) return C.amber;
   return C.coral;
 };
-
-/* ------------------------------------------------------------------ */
-/*  מצב סטורי — "המצגת של הבוקר"                                        */
-/* ------------------------------------------------------------------ */
 
 function StoryMode({ slides, onClose, onShare }) {
   const [idx, setIdx] = useState(0);
@@ -396,7 +386,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
   const dayCPL = (m) => (m.gross > 0 ? m.spent / m.gross : null);
   const dayCPQL = (m) => (m.quality > 0 ? m.spent / m.quality : null);
 
-  /* תנועות היממה האחרונה (דלתא מול הדוח הקודם) — כלים + קמפייני חיפוש */
   const plMovers = delta ? Object.entries(delta.platforms).map(([name, d]) => ({ name, raw: name, ...d })) : [];
   const cmMovers = delta && delta.campaigns
     ? Object.entries(delta.campaigns).map(([name, d]) => ({ name: `חיפוש · ${name}`, raw: name, ...d })) : [];
@@ -412,7 +401,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
     .filter((m) => m.spent > 300 && (m.quality || 0) <= 0)
     .sort((a, b) => b.spent - a.spent).slice(0, 3);
 
-  /* חלופות כשאין עדיין דוח קודם */
   const noDeltaNote = "אין עדיין דוח קודם להשוואה — מוצגים נתונים מצטברים";
   const bestGrossAll = [...data.platforms].filter((p) => p.gross).sort((a, b) => b.gross - a.gross)[0];
   const bestQualityAll = [...data.platforms].filter((p) => p.quality).sort((a, b) => b.quality - a.quality)[0];
@@ -431,7 +419,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
   });
 
   const slides = [
-    /* 1 — נתונים כלליים: תקציב, קצב קלנדרי, ניצול */
     {
       kicker: now.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" }) + " · תמונת מצב",
       big: `${util}% ניצול`,
@@ -449,7 +436,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
       foot: delta ? `השוואה מול הדוח מ־${heDate(delta.date)}` : noDeltaNote,
       bg: g1,
     },
-    /* 2 — ברוטו */
     {
       kicker: "לידים ברוטו",
       big: num(s.actual.gross),
@@ -467,7 +453,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
       foot: delta ? null : noDeltaNote,
       bg: g1,
     },
-    /* 3 — איכות */
     {
       kicker: "לידים איכותיים",
       big: num(s.actual.quality),
@@ -487,7 +472,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
       foot: delta ? null : noDeltaNote,
       bg: g1,
     },
-    /* 4 — לשים לב · ברוטו */
     {
       kicker: "🚨 לשים לב · ברוטו" + (delta ? " · היממה האחרונה" : ""),
       big: (delta ? weakGross : weakGrossAll).length ? `${(delta ? weakGross : weakGrossAll).length} כלים` : "הכל תקין ✅",
@@ -498,7 +482,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
       foot: "חריג = תקציב שמומש בלי לידים, או עלות לליד כפולה ומעלה מהממוצע",
       bg: g1,
     },
-    /* 5 — לשים לב · איכות */
     {
       kicker: "🚨 לשים לב · איכות" + (delta ? " · היממה האחרונה" : ""),
       big: (delta ? weakQuality : weakQualityAll).length ? `${(delta ? weakQuality : weakQualityAll).length} כלים` : "הכל תקין ✅",
@@ -520,10 +503,6 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
   });
   return slides;
 }
-
-/* ------------------------------------------------------------------ */
-/*  רכיבים                                                              */
-/* ------------------------------------------------------------------ */
 
 function KpiCard({ title, actual, target, format, inverse, sub, delta, deltaMoney, deltaSuffix }) {
   const prog = target ? (inverse ? (target / actual) * 100 : (actual / target) * 100) : null;
@@ -562,10 +541,6 @@ function Th({ children, k, sort, setSort }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  אפליקציה                                                            */
-/* ------------------------------------------------------------------ */
-
 export default function App() {
   const [data, setData] = useState(DEMO);
   const [prevSnap, setPrevSnap] = useState(null);
@@ -579,12 +554,11 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = useState(null);
   const [story, setStory] = useState(false);
   const [daySort, setDaySort] = useState({ key: "spent", dir: "desc" });
-  /* ארכיון ולוח שנה */
   const [calOpen, setCalOpen] = useState(false);
   const [calYear, setCalYear] = useState(new Date().getFullYear());
-  const [dayIndex, setDayIndex] = useState([]);          /* תאריכים שיש להם דוח שמור */
-  const [viewingDay, setViewingDay] = useState(null);    /* צפייה בדוח היסטורי */
-  const [calPaste, setCalPaste] = useState(null);        /* {date} — הזנת דוח ליום ספציפי */
+  const [dayIndex, setDayIndex] = useState([]);
+  const [viewingDay, setViewingDay] = useState(null);
+  const [calPaste, setCalPaste] = useState(null);
   const [calPasteText, setCalPasteText] = useState("");
 
   const refreshDayIndex = useCallback(async () => {
@@ -592,7 +566,6 @@ export default function App() {
     setDayIndex(keys.map((k) => k.slice(DAY_PREFIX.length)).sort());
   }, []);
 
-  /* תאריך הארכוב — ברירת מחדל: יום לפני תאריך ההעלאה. ניתן לשינוי ידני למקרים חריגים */
   const yesterdayIso = () => { const y = new Date(); y.setDate(y.getDate() - 1); return isoDay(y); };
   const [archiveDate, setArchiveDate] = useState(yesterdayIso());
   useEffect(() => { if (showConnect) setArchiveDate(yesterdayIso()); }, [showConnect]);
@@ -610,10 +583,8 @@ export default function App() {
     });
   }, []);
 
-  /* טעינת תמונת מצב — קודם מקישור משותף (hash), אחר כך מהאחסון */
   useEffect(() => {
     (async () => {
-      /* קישור משותף? */
       try {
         const hash = (window.location.hash || "").replace(/^#/, "");
         const m = hash.match(/r=([\w\-_]+)/);
@@ -648,7 +619,6 @@ export default function App() {
     if (parsed) {
       const now = new Date().toISOString();
       if (targetDay) {
-        /* הזנה ידנית ליום ספציפי מלוח השנה — נשמר לארכיון בלבד */
         await store.set(dayKey(targetDay), { savedAt: now, reportDay: targetDay, data: parsed });
         await refreshDayIndex();
         setCalPaste(null); setCalPasteText("");
@@ -658,7 +628,6 @@ export default function App() {
       const latest = await store.get("peres:latest");
       if (latest) { await store.set("peres:previous", latest); setPrevSnap(latest); }
       await store.set("peres:latest", { savedAt: now, data: parsed });
-      /* ארכוב אוטומטי: דוח שנטען היום משקף את אתמול — נשמר לתאריך יום קודם (או לתאריך שנבחר ידנית) */
       const yIso = /^\d{4}-\d{2}-\d{2}$/.test(archiveDate) ? archiveDate : yesterdayIso();
       await store.set(dayKey(yIso), { savedAt: now, reportDay: yIso, data: parsed });
       await refreshDayIndex();
@@ -674,7 +643,6 @@ export default function App() {
     }
   }, [refreshDayIndex, archiveDate]);
 
-  /* פתיחת דוח היסטורי מהארכיון — הדלתא מחושבת מול היום השמור הקרוב שלפניו */
   const openDay = useCallback(async (iso) => {
     const snap = await store.get(dayKey(iso));
     if (!snap || !snap.data) return;
@@ -729,7 +697,7 @@ export default function App() {
 
   const delta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
   const insights = useMemo(() => buildInsights(data, delta, isActive), [data, delta, isActive]);
-  /* שורות ביצועי היממה — כלים + קמפייני חיפוש מתוך הדלתא */
+  
   const dayRows = useMemo(() => {
     if (!delta) return null;
     const rows = [];
@@ -791,8 +759,6 @@ export default function App() {
     setAiLoading(false);
   }, [data, delta, isActive]);
 
-
-  /* ---------- שיתוף ---------- */
   const buildShareLink = useCallback(() => {
     const state = {
       v: 1,
@@ -809,7 +775,7 @@ export default function App() {
     try {
       if (navigator.share) { await navigator.share(url ? { title, text, url } : { title, text }); return; }
     } catch (e) {
-      if (e && e.name === "AbortError") return; /* המשתמש ביטל — לא שגיאה */
+      if (e && e.name === "AbortError") return; 
     }
     let copied = false;
     const toCopy = url || text;
@@ -1353,7 +1319,7 @@ export default function App() {
             <div className="cal-months">
               {Array.from({ length: 12 }, (_, mi) => {
                 const monthName = new Date(calYear, mi, 1).toLocaleDateString("he-IL", { month: "long" });
-                const firstDow = new Date(calYear, mi, 1).getDay(); /* 0=ראשון */
+                const firstDow = new Date(calYear, mi, 1).getDay(); 
                 const daysInM = new Date(calYear, mi + 1, 0).getDate();
                 const todayIso = isoDay(new Date());
                 return (
