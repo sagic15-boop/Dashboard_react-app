@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect } from "react";
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -70,10 +71,46 @@ const pct = (v, dec = 0) => (v === null || v === undefined ? "—" : Number(v).t
 const heDate = (d) => new Date(d).toLocaleDateString("he-IL", { day: "numeric", month: "long" }) + " · " +
   new Date(d).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 
+/* אחסון תלת-שכבתי: window.storage (קלוד) + localStorage (דפדפן/ורסל) + זיכרון (גיבוי לסשן).
+   כתיבה נשמרת לכל השכבות במקביל — כך הארכיון עובד בכל סביבה. */
+const memStore = {};
+const LS_PREFIX = "peres:";
 const store = {
-  async get(k) { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } },
-  async set(k, v) { try { await window.storage.set(k, JSON.stringify(v)); } catch {} },
-  async list(prefix) { try { const r = await window.storage.list(prefix); return (r && r.keys) || []; } catch { return []; } },
+  async get(k) {
+    try {
+      if (window.storage) {
+        const r = await window.storage.get(k);
+        if (r && r.value !== undefined && r.value !== null) return JSON.parse(r.value);
+      }
+    } catch {}
+    try {
+      const v = localStorage.getItem(LS_PREFIX + k);
+      if (v !== null) return JSON.parse(v);
+    } catch {}
+    return memStore[k] !== undefined ? JSON.parse(memStore[k]) : null;
+  },
+  async set(k, v) {
+    const s = JSON.stringify(v);
+    memStore[k] = s;
+    try { if (window.storage) await window.storage.set(k, s); } catch {}
+    try { localStorage.setItem(LS_PREFIX + k, s); } catch {}
+  },
+  async list(prefix) {
+    const keys = new Set(Object.keys(memStore).filter((k) => k.startsWith(prefix)));
+    try {
+      if (window.storage) {
+        const r = await window.storage.list(prefix);
+        ((r && r.keys) || []).forEach((k) => keys.add(k));
+      }
+    } catch {}
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(LS_PREFIX + prefix)) keys.add(k.slice(LS_PREFIX.length));
+      }
+    } catch {}
+    return [...keys];
+  },
 };
 
 /* מפתחות ארכיון יומי: peres:day:YYYY-MM-DD */
@@ -701,15 +738,35 @@ export default function App() {
     setStatus({ kind: "ok", msg: "חזרת לדוח הנוכחי" });
   }, []);
 
-  /* העלאת קובץ CSV — עובר דרך אותו loadCsv, כולל ארכוב אוטומטי ליום קודם */
+  /* העלאת קובץ CSV / XLSX — עובר דרך אותו loadCsv, כולל ארכוב אוטומטי ליום קודם */
   const handleFile = useCallback((e, targetDay = null) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; /* מאפשר לבחור שוב את אותו קובץ */
     if (!file) return;
+    const isExcel = /\.(xlsx|xlsm|xls)$/i.test(file.name);
     const reader = new FileReader();
-    reader.onload = () => loadCsv(String(reader.result || ""), targetDay);
     reader.onerror = () => setStatus({ kind: "err", msg: "קריאת הקובץ נכשלה — נסו שוב" });
-    reader.readAsText(file);
+    if (isExcel) {
+      reader.onload = () => {
+        try {
+          const wb = XLSX.read(reader.result, { type: "array" });
+          /* בוחרים את הלשונית שמכילה את מבנה הדוח; אם לא נמצאה — הראשונה */
+          let chosen = null;
+          for (const name of wb.SheetNames) {
+            const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
+            if (csv.includes("פלטפורמה") && csv.includes("לידים ברוטו")) { chosen = csv; break; }
+          }
+          if (!chosen) chosen = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
+          loadCsv(chosen, targetDay);
+        } catch {
+          setStatus({ kind: "err", msg: "לא הצלחתי לקרוא את קובץ האקסל — ודאו שהוא אינו מוגן בסיסמה" });
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.onload = () => loadCsv(String(reader.result || ""), targetDay);
+      reader.readAsText(file);
+    }
   }, [loadCsv]);
 
   const fetchSheet = useCallback(async () => {
@@ -1046,8 +1103,8 @@ export default function App() {
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="btn" onClick={fetchSheet}>טעינה מהקישור</button>
             <label className="btn file-btn">
-              📁 העלאת קובץ CSV
-              <input type="file" accept=".csv,text/csv,text/plain" onChange={(e) => handleFile(e)} />
+              📁 העלאת קובץ CSV / XLSX
+              <input type="file" accept=".csv,.xlsx,.xlsm,.xls,text/csv,text/plain" onChange={(e) => handleFile(e)} />
             </label>
             <button className="btn ghost" onClick={() => setPasteMode((v) => !v)}>הדבקת נתונים ידנית</button>
           </div>
@@ -1361,7 +1418,16 @@ export default function App() {
                 <span className="cal-year">{calYear}</span>
                 <button className="btn ghost" onClick={() => setCalYear((y) => y + 1)}>{calYear + 1} ◀</button>
               </div>
-              <button className="story-close" style={{ position: "static" }} onClick={() => setCalOpen(false)}>✕</button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button className="btn ghost" onClick={async () => {
+                  const y = new Date(); y.setDate(y.getDate() - 1);
+                  const iso = viewingDay || isoDay(y);
+                  await store.set(dayKey(iso), { savedAt: new Date().toISOString(), reportDay: iso, data });
+                  await refreshDayIndex();
+                  setStatus({ kind: "ok", msg: `הבורד הנוכחי נשמר לארכיון לתאריך ${iso.split("-").reverse().join(".")}` });
+                }}>💾 שמירת הבורד הנוכחי</button>
+                <button className="story-close" style={{ position: "static" }} onClick={() => setCalOpen(false)}>✕</button>
+              </div>
             </div>
             <div className="cal-legend">
               <span><span className="cal-dot has" /> יש דוח שמור — לחיצה פותחת אותו</span>
@@ -1423,8 +1489,8 @@ export default function App() {
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button className="btn" onClick={() => loadCsv(calPasteText, calPaste.date)}>שמירה לארכיון</button>
               <label className="btn file-btn">
-                📁 או העלאת קובץ CSV
-                <input type="file" accept=".csv,text/csv,text/plain" onChange={(e) => handleFile(e, calPaste.date)} />
+                📁 או העלאת קובץ CSV / XLSX
+                <input type="file" accept=".csv,.xlsx,.xlsm,.xls,text/csv,text/plain" onChange={(e) => handleFile(e, calPaste.date)} />
               </label>
               <button className="btn ghost" onClick={() => setCalPaste(null)}>ביטול</button>
             </div>
