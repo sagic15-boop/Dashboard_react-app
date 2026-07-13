@@ -40,12 +40,15 @@ const DEMO = {
   ],
 };
 
-const DEMO_AUCTION = [
-  { domain: "אתם — המרכז האקדמי פרס", is: 42, overlap: null, above: null, top: 78, outrank: null, you: true },
-  { domain: "ono.ac.il",    is: 31, overlap: 52, above: 38, top: 71, outrank: 55 },
-  { domain: "colman.ac.il", is: 24, overlap: 44, above: 29, top: 65, outrank: 62 },
-  { domain: "mta.ac.il",    is: 18, overlap: 36, above: 22, top: 58, outrank: 70 },
-  { domain: "openu.ac.il",  is: 15, overlap: 28, above: 17, top: 51, outrank: 76 },
+/* נתוני דוגמה לביצועי יממה — מוצגים רק עד שנשמרות שתי תמונות מצב אמיתיות */
+const DEMO_DAY = [
+  { name: "PMAX",               type: "כלי",   spent: 2450, gross: 14, quality: 1 },
+  { name: "חיפוש",              type: "כלי",   spent: 980,  gross: 31, quality: 3 },
+  { name: "PMAX Degree",        type: "כלי",   spent: 1720, gross: 7,  quality: 1 },
+  { name: "פייסבוק תואר ראשון", type: "כלי",   spent: 810,  gross: 9,  quality: 0 },
+  { name: "Demandgen",          type: "כלי",   spent: 640,  gross: 1,  quality: 0 },
+  { name: "מותג",               type: "חיפוש", spent: 130,  gross: 8,  quality: 1 },
+  { name: "גנרי ראשון",         type: "חיפוש", spent: 420,  gross: 3,  quality: 0 },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -70,6 +73,17 @@ const heDate = (d) => new Date(d).toLocaleDateString("he-IL", { day: "numeric", 
 const store = {
   async get(k) { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } },
   async set(k, v) { try { await window.storage.set(k, JSON.stringify(v)); } catch {} },
+  async list(prefix) { try { const r = await window.storage.list(prefix); return (r && r.keys) || []; } catch { return []; } },
+};
+
+/* מפתחות ארכיון יומי: peres:day:YYYY-MM-DD */
+const DAY_PREFIX = "peres:day:";
+const isoDay = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const dayKey = (iso) => DAY_PREFIX + iso;
+const heDayLabel = (iso) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 };
 
 function mapHeader(rows, anchor) {
@@ -170,32 +184,6 @@ function parseReport(csvText) {
 
   const ok = out.summary && out.platforms.length > 0;
   return ok ? { summary: out.summary, platforms: out.platforms, campaigns: out.campaigns.length ? out.campaigns : [] } : null;
-}
-
-function parseAuction(text) {
-  const rows = Papa.parse(text.trim(), { delimiter: text.includes("\t") ? "\t" : "" }).data.filter((r) => r.length > 2);
-  if (rows.length < 2) return null;
-  const hdr = rows[0].map((c) => String(c || "").toLowerCase());
-  const col = (...keys) => hdr.findIndex((h) => keys.some((k) => h.includes(k)));
-  const ci = {
-    domain: 0,
-    is: col("impression share", "נתח חשיפ", "is"),
-    overlap: col("overlap", "חפיפה"),
-    above: col("above", "מעל"),
-    top: col("top of page", "ראש העמוד", "עליון"),
-    outrank: col("outrank", "דירוג גבוה"),
-  };
-  const pc = (v) => {
-    const n = toNum(String(v).replace("<", ""));
-    return n === null ? null : n <= 1 ? Math.round(n * 100) : Math.round(n);
-  };
-  const out = rows.slice(1).map((r) => ({
-    domain: String(r[ci.domain] || "").trim(),
-    is: pc(r[ci.is]), overlap: pc(r[ci.overlap]), above: pc(r[ci.above]),
-    top: pc(r[ci.top]), outrank: pc(r[ci.outrank]),
-    you: /you|את[הם]|עצמ/i.test(String(r[ci.domain])),
-  })).filter((r) => r.domain);
-  return out.length ? out : null;
 }
 
 function toCsvUrl(link) {
@@ -313,24 +301,6 @@ function buildInsights(data, delta, isActive = () => true) {
       out.push({ icon: "💸", tone: "info", text: `מומשו ${nis(Math.abs(delta.summary.spent))} מאז הדוח הקודם, שהניבו ${num(delta.summary.gross ?? 0)} לידים חדשים (${num(delta.summary.quality ?? 0)} איכותיים).` });
   }
   return out.slice(0, 7);
-}
-
-function buildAuctionRecs(rows) {
-  const you = rows.find((r) => r.you) || rows[0];
-  const comps = rows.filter((r) => !r.you);
-  const recs = [];
-  if (you && you.is !== null && you.is < 45)
-    recs.push({ icon: "📢", text: `נתח החשיפות שלכם עומד על ${you.is}% — יותר ממחצית החיפושים הרלוונטיים מוצגים בלעדיכם. הגורם הנפוץ: מגבלת תקציב או Rank. שקלו תגבור תקציב חיפוש בקמפיינים הגנריים.` });
-  comps.forEach((c) => {
-    if (c.overlap !== null && c.above !== null && c.overlap > 40 && c.above > 30)
-      recs.push({ icon: "⚔️", text: `${c.domain} מופיע מעליכם ב־${c.above}% מהמכרזים המשותפים (חפיפה ${c.overlap}%). מומלץ: חיזוק בידים במותג + קמפיין RLSA ממוקד מולו.` });
-    if (c.outrank !== null && c.outrank < 55)
-      recs.push({ icon: "🛡️", text: `שיעור ה־Outranking מול ${c.domain} עומד על ${c.outrank}% בלבד — קרוב לתיקו. שיפור Ad Rank (תוספי מודעה, רלוונטיות LP) ייתן כאן יתרון מהיר.` });
-  });
-  if (you && you.top !== null && you.top >= 75)
-    recs.push({ icon: "✅", text: `שיעור הופעה בראש העמוד גבוה (${you.top}%) — המיקום כשמופיעים טוב; הבעיה, אם קיימת, היא בכיסוי ולא באיכות.` });
-  if (!recs.length) recs.push({ icon: "ℹ️", text: "הדביקו ייצוא Auction Insights עדכני מגוגל אדס לקבלת המלצות מותאמות." });
-  return recs.slice(0, 5);
 }
 
 /* ------------------------------------------------------------------ */
@@ -608,10 +578,24 @@ export default function App() {
   const [drillOpen, setDrillOpen] = useState(true);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [story, setStory] = useState(false);
-  const [auction, setAuction] = useState(DEMO_AUCTION);
-  const [auctionDemo, setAuctionDemo] = useState(true);
-  const [auctionPaste, setAuctionPaste] = useState("");
-  const [showAuctionPaste, setShowAuctionPaste] = useState(false);
+  const [daySort, setDaySort] = useState({ key: "spent", dir: "desc" });
+  /* ארכיון ולוח שנה */
+  const [calOpen, setCalOpen] = useState(false);
+  const [calYear, setCalYear] = useState(new Date().getFullYear());
+  const [dayIndex, setDayIndex] = useState([]);          /* תאריכים שיש להם דוח שמור */
+  const [viewingDay, setViewingDay] = useState(null);    /* צפייה בדוח היסטורי */
+  const [calPaste, setCalPaste] = useState(null);        /* {date} — הזנת דוח ליום ספציפי */
+  const [calPasteText, setCalPasteText] = useState("");
+
+  const refreshDayIndex = useCallback(async () => {
+    const keys = await store.list(DAY_PREFIX);
+    setDayIndex(keys.map((k) => k.slice(DAY_PREFIX.length)).sort());
+  }, []);
+
+  /* תאריך הארכוב — ברירת מחדל: יום לפני תאריך ההעלאה. ניתן לשינוי ידני למקרים חריגים */
+  const yesterdayIso = () => { const y = new Date(); y.setDate(y.getDate() - 1); return isoDay(y); };
+  const [archiveDate, setArchiveDate] = useState(yesterdayIso());
+  useEffect(() => { if (showConnect) setArchiveDate(yesterdayIso()); }, [showConnect]);
   const [aiInsights, setAiInsights] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [activeMap, setActiveMap] = useState({});
@@ -638,7 +622,6 @@ export default function App() {
           if (st && st.data) {
             setData(st.data);
             if (st.prev) setPrevSnap(st.prev);
-            if (st.auction) { setAuction(st.auction); setAuctionDemo(false); }
             if (st.activeMap) setActiveMap(st.activeMap);
             setUpdatedAt(st.savedAt ? new Date(st.savedAt) : null);
             setStatus({ kind: "ok", msg: `נטענה תמונת מצב מקישור משותף${st.savedAt ? ` (${heDate(st.savedAt)})` : ""}` });
@@ -648,7 +631,6 @@ export default function App() {
       } catch {}
       const latest = await store.get("peres:latest");
       const prev = await store.get("peres:previous");
-      const savedAuction = await store.get("peres:auction");
       const savedActive = await store.get("peres:active");
       if (savedActive) setActiveMap(savedActive);
       if (latest && latest.data) {
@@ -657,25 +639,66 @@ export default function App() {
         setStatus({ kind: "ok", msg: `נטענה תמונת המצב האחרונה שנשמרה (${heDate(latest.savedAt)})` });
       }
       if (prev) setPrevSnap(prev);
-      if (savedAuction) { setAuction(savedAuction); setAuctionDemo(false); }
     })();
-  }, []);
+    refreshDayIndex();
+  }, [refreshDayIndex]);
 
-  const loadCsv = useCallback(async (text) => {
+  const loadCsv = useCallback(async (text, targetDay = null) => {
     const parsed = parseReport(text);
     if (parsed) {
       const now = new Date().toISOString();
+      if (targetDay) {
+        /* הזנה ידנית ליום ספציפי מלוח השנה — נשמר לארכיון בלבד */
+        await store.set(dayKey(targetDay), { savedAt: now, reportDay: targetDay, data: parsed });
+        await refreshDayIndex();
+        setCalPaste(null); setCalPasteText("");
+        setStatus({ kind: "ok", msg: `הדוח נשמר בארכיון לתאריך ${heDayLabel(targetDay)}` });
+        return;
+      }
       const latest = await store.get("peres:latest");
       if (latest) { await store.set("peres:previous", latest); setPrevSnap(latest); }
       await store.set("peres:latest", { savedAt: now, data: parsed });
+      /* ארכוב אוטומטי: דוח שנטען היום משקף את אתמול — נשמר לתאריך יום קודם (או לתאריך שנבחר ידנית) */
+      const yIso = /^\d{4}-\d{2}-\d{2}$/.test(archiveDate) ? archiveDate : yesterdayIso();
+      await store.set(dayKey(yIso), { savedAt: now, reportDay: yIso, data: parsed });
+      await refreshDayIndex();
       setData(parsed);
+      setViewingDay(null);
       setUpdatedAt(new Date(now));
       setAiInsights(null);
-      setStatus({ kind: "ok", msg: latest ? "הנתונים נטענו — הדלתות מחושבות מול הדוח הקודם" : "הנתונים נטענו ונשמרו. בטעינה הבאה יוצגו דלתות מול הדוח הזה" });
+      setStatus({ kind: "ok", msg: (latest ? "הנתונים נטענו — הדלתות מחושבות מול הדוח הקודם" : "הנתונים נטענו ונשמרו. בטעינה הבאה יוצגו דלתות מול הדוח הזה") + ` · אורכב לתאריך ${yIso.split("-").reverse().join(".")}` });
       setShowConnect(false);
     } else {
       setStatus({ kind: "err", msg: "לא זוהה מבנה הדוח בקובץ. ודאו שהלשונית הנכונה מקושרת (עם טבלאות פלטפורמה/קמפיין)." });
+      if (targetDay) setCalPaste({ date: targetDay, error: true });
     }
+  }, [refreshDayIndex, archiveDate]);
+
+  /* פתיחת דוח היסטורי מהארכיון — הדלתא מחושבת מול היום השמור הקרוב שלפניו */
+  const openDay = useCallback(async (iso) => {
+    const snap = await store.get(dayKey(iso));
+    if (!snap || !snap.data) return;
+    const before = dayIndex.filter((d) => d < iso);
+    const prevIso = before.length ? before[before.length - 1] : null;
+    const prevDaySnap = prevIso ? await store.get(dayKey(prevIso)) : null;
+    setData(snap.data);
+    setPrevSnap(prevDaySnap && prevDaySnap.data ? prevDaySnap : null);
+    setViewingDay(iso);
+    setUpdatedAt(new Date(snap.savedAt));
+    setAiInsights(null);
+    setCalOpen(false);
+    setStatus({ kind: "ok", msg: `צפייה בדוח מהארכיון · ${heDayLabel(iso)}${prevIso ? ` · דלתות מול ${prevIso.split("-").reverse().slice(0, 2).join(".")}` : ""}` });
+  }, [dayIndex]);
+
+  const backToToday = useCallback(async () => {
+    const latest = await store.get("peres:latest");
+    const prev = await store.get("peres:previous");
+    setData(latest && latest.data ? latest.data : DEMO);
+    setPrevSnap(prev || null);
+    setViewingDay(null);
+    setUpdatedAt(latest ? new Date(latest.savedAt) : null);
+    setAiInsights(null);
+    setStatus({ kind: "ok", msg: "חזרת לדוח הנוכחי" });
   }, []);
 
   const fetchSheet = useCallback(async () => {
@@ -706,7 +729,14 @@ export default function App() {
 
   const delta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
   const insights = useMemo(() => buildInsights(data, delta, isActive), [data, delta, isActive]);
-  const auctionRecs = useMemo(() => buildAuctionRecs(auction), [auction]);
+  /* שורות ביצועי היממה — כלים + קמפייני חיפוש מתוך הדלתא */
+  const dayRows = useMemo(() => {
+    if (!delta) return null;
+    const rows = [];
+    Object.entries(delta.platforms).forEach(([name, d]) => rows.push({ name, type: "כלי", ...d }));
+    Object.entries(delta.campaigns || {}).forEach(([name, d]) => rows.push({ name, type: "חיפוש", ...d }));
+    return rows.filter((r) => (r.spent || 0) !== 0 || (r.gross || 0) !== 0 || (r.quality || 0) !== 0);
+  }, [delta]);
 
   const sortedPlatforms = useMemo(() => {
     const arr = [...data.platforms];
@@ -736,7 +766,6 @@ export default function App() {
         platforms: data.platforms.map((p) => ({ ...p, status: isActive(p.name) ? "active" : "paused_by_user" })),
         searchCampaigns: data.campaigns.map((c) => ({ ...c, status: isActive(c.name) ? "active" : "paused_by_user" })),
         deltaSincePreviousReport: delta,
-        auctionInsights: auctionDemo ? null : auction,
         note: "קמפיינים במצב paused_by_user כבויים כרגע — אל תמליץ עליהם המלצות אופטימיזציה שוטפות; מותר רק להמליץ להפעיל אותם מחדש אם הביצועים ההיסטוריים מצדיקים",
       };
       const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -760,15 +789,8 @@ export default function App() {
       setAiInsights(["לא הצלחתי להפיק תובנות AI כרגע — נסו שוב בעוד רגע."]);
     }
     setAiLoading(false);
-  }, [data, delta, auction, auctionDemo, isActive]);
+  }, [data, delta, isActive]);
 
-  const loadAuction = useCallback(async () => {
-    const parsed = parseAuction(auctionPaste);
-    if (parsed) {
-      setAuction(parsed); setAuctionDemo(false); setShowAuctionPaste(false);
-      await store.set("peres:auction", parsed);
-    }
-  }, [auctionPaste]);
 
   /* ---------- שיתוף ---------- */
   const buildShareLink = useCallback(() => {
@@ -777,11 +799,10 @@ export default function App() {
       savedAt: (updatedAt || new Date()).toISOString(),
       data,
       prev: prevSnap,
-      auction: auctionDemo ? null : auction,
       activeMap,
     };
     return currentBaseUrl() + "#r=" + encodeState(state);
-  }, [data, prevSnap, auction, auctionDemo, activeMap, updatedAt]);
+  }, [data, prevSnap, activeMap, updatedAt]);
 
   const shareOut = useCallback(async (title, text, withLink = true) => {
     const url = withLink ? buildShareLink() : null;
@@ -861,8 +882,10 @@ export default function App() {
         .status.err { border-color:${C.coral}; color:${C.coral}; }
         .status.ok { border-color:${C.teal}; color:${C.teal}; }
         .connect { background:${C.panel}; border:1px solid ${C.line}; border-radius:14px; padding:18px; margin-bottom:22px; }
-        .connect input, .connect textarea, .auction-paste textarea { width:100%; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:10px; padding:10px 12px; font-family:inherit; font-size:14px; margin:8px 0; direction:ltr; }
-        .connect textarea, .auction-paste textarea { min-height:110px; font-size:12px; }
+        .connect input, .connect textarea { width:100%; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:10px; padding:10px 12px; font-family:inherit; font-size:14px; margin:8px 0; direction:ltr; }
+        .connect textarea { min-height:110px; font-size:12px; }
+        .archive-date-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:2px 0 10px; font-size:13px; }
+        .archive-date-row input[type="date"] { width:auto; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:8px; padding:6px 10px; font-family:inherit; font-size:13px; margin:0; color-scheme:dark; }
         .grid-kpi { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:14px; margin-bottom:26px; }
         .kpi { background:${C.panel}; border:1px solid ${C.line}; border-radius:14px; padding:16px 18px 14px; }
         .kpi-title { color:${C.dim}; font-size:13px; font-weight:500; }
@@ -904,7 +927,6 @@ export default function App() {
         .insight.warn { border-right-color:${C.amber}; }
         .insight .ico { font-size:18px; line-height:1.3; }
         .ai-box { margin-top:14px; border-top:1px dashed ${C.line}; padding-top:14px; }
-        .auction-you td { background: rgba(245,184,65,.07); font-weight:700; }
         .story-overlay { position:fixed; inset:0; background:rgba(5,10,20,.85); backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center; z-index:100; }
         .story-card { position:relative; width:min(430px, 94vw); height:min(760px, 92vh); border-radius:22px; border:1px solid ${C.line}; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 30px 80px rgba(0,0,0,.6); }
         .story-progress { display:flex; gap:5px; padding:14px 16px 0; }
@@ -927,6 +949,29 @@ export default function App() {
         .share-text { width:100%; min-height:180px; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:10px; padding:12px; font-family:inherit; font-size:13px; line-height:1.6; resize:vertical; direction:rtl; }
         .share-link-row { display:flex; gap:8px; }
         .share-link { flex:1; background:${C.bg}; border:1px solid ${C.line}; color:${C.blue}; border-radius:10px; padding:10px 12px; font-size:12px; font-family:monospace; min-width:0; }
+        .hist-banner { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; background:rgba(154,123,247,.1); border:1px solid ${C.violet}; border-radius:12px; padding:10px 16px; margin:-8px 0 20px; font-size:14px; }
+        .cal-cta { display:flex; align-items:center; justify-content:space-between; gap:14px; cursor:pointer; transition:border-color .15s; }
+        .cal-cta:hover { border-color:${C.amber}; }
+        .cal-cta-arrow { color:${C.amber}; font-size:20px; }
+        .cal-overlay { position:fixed; inset:0; background:rgba(5,10,20,.85); backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center; z-index:150; padding:14px; }
+        .cal-sheet { background:${C.panel}; border:1px solid ${C.line}; border-radius:18px; padding:18px; width:min(1060px, 96vw); max-height:92vh; overflow-y:auto; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+        .cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+        .cal-year-nav { display:flex; align-items:center; gap:12px; }
+        .cal-year { font-size:24px; font-weight:900; color:${C.amber}; letter-spacing:1px; }
+        .cal-legend { display:flex; gap:20px; flex-wrap:wrap; color:${C.dim}; font-size:12px; margin-bottom:14px; }
+        .cal-legend > span { display:flex; align-items:center; gap:6px; }
+        .cal-dot { width:9px; height:9px; border-radius:50%; background:${C.panelSoft}; border:1px solid ${C.line}; display:inline-block; }
+        .cal-dot.has { background:${C.teal}; border-color:${C.teal}; }
+        .cal-months { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:14px; }
+        .cal-month { background:${C.bg}; border:1px solid ${C.line}; border-radius:12px; padding:12px; }
+        .cal-month-name { font-weight:900; font-size:14px; margin-bottom:8px; color:${C.text}; }
+        .cal-grid { display:grid; grid-template-columns:repeat(7, 1fr); gap:3px; }
+        .cal-dow { text-align:center; color:${C.dim}; font-size:10.5px; padding-bottom:3px; }
+        .cal-day { aspect-ratio:1; border:none; background:transparent; color:${C.dim}; font-family:inherit; font-size:11.5px; border-radius:7px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+        .cal-day:hover { background:${C.panelSoft}; color:${C.text}; }
+        .cal-day.has { background:rgba(55,201,169,.18); color:${C.teal}; font-weight:900; border:1px solid rgba(55,201,169,.5); }
+        .cal-day.has:hover { background:rgba(55,201,169,.32); }
+        .cal-day.today { outline:2px solid ${C.amber}; outline-offset:-2px; }
         .story-rows { display:flex; flex-direction:column; gap:10px; margin-top:4px; }
         .story-row { display:flex; flex-direction:column; gap:2px; background:rgba(255,255,255,.05); border:1px solid ${C.line}; border-radius:12px; padding:10px 14px; }
         .story-row-label { color:${C.dim}; font-size:12.5px; font-weight:700; }
@@ -963,6 +1008,13 @@ export default function App() {
 
       <div className={`status ${status.kind === "err" ? "err" : status.kind === "ok" ? "ok" : ""}`}>{status.msg}</div>
 
+      {viewingDay && (
+        <div className="hist-banner">
+          <span>🕰️ אתה צופה בדוח מהארכיון — <b>{heDayLabel(viewingDay)}</b></span>
+          <button className="btn" onClick={backToToday}>חזרה לדוח הנוכחי</button>
+        </div>
+      )}
+
       {/* ---------- חיבור גיליון ---------- */}
       {showConnect && (
         <div className="connect">
@@ -971,6 +1023,13 @@ export default function App() {
             כדי שהדשבורד יוכל לקרוא את הגיליון: בגיליון בחרו <b>קובץ ← שיתוף ← פרסום באינטרנט</b>, בחרו את הלשונית ופורמט <b>CSV</b>, והדביקו כאן את הקישור. כל טעינה נשמרת כתמונת מצב, והטעינה הבאה תציג דלתות מולה.
           </div>
           <input placeholder="https://docs.google.com/spreadsheets/d/..." value={link} onChange={(e) => setLink(e.target.value)} />
+          <div className="archive-date-row">
+            <span>📆 יאורכב לתאריך:</span>
+            <input type="date" value={archiveDate} onChange={(e) => setArchiveDate(e.target.value)} />
+            <span style={{ color: C.dim, fontSize: 12 }}>
+              ברירת מחדל: יום לפני ההעלאה (הדוח משקף את אתמול). שנו רק אם מעלים דוח באיחור.
+            </span>
+          </div>
           <div style={{ display: "flex", gap: 10 }}>
             <button className="btn" onClick={fetchSheet}>טעינה מהקישור</button>
             <button className="btn ghost" onClick={() => setPasteMode((v) => !v)}>הדבקת נתונים ידנית</button>
@@ -1180,57 +1239,93 @@ export default function App() {
         </div>
       )}
 
-      {/* ---------- Auction Insights ---------- */}
+      {/* ---------- ביצועי היממה האחרונה (דלתא) ---------- */}
       <div className="panel" style={{ marginBottom: 26, marginTop: drillOpen ? 0 : 26 }}>
-        <h2>⚔️ Auction Insights · מפת התחרות בחיפוש</h2>
+        <h2>📅 ביצועי קמפיינים · היממה האחרונה</h2>
         <div className="hint">
-          {auctionDemo ? "נתוני דוגמה להמחשה — הדביקו ייצוא Auction Insights מגוגל אדס לנתונים אמיתיים" : "נתונים שהודבקו מגוגל אדס"}
-          {" · "}
-          <a style={{ color: C.blue, cursor: "pointer" }} onClick={() => setShowAuctionPaste((v) => !v)}>
-            {showAuctionPaste ? "סגירה" : "עדכון נתונים"}
-          </a>
+          {dayRows
+            ? `השינוי בין הדוח הנוכחי לדוח מ־${heDate(delta.date)} — מה כל כלי וקמפיין עשה בפועל ביממה · לחיצה על כותרת ממיינת`
+            : "נתוני דוגמה להמחשה — הטבלה תתמלא אוטומטית בנתונים אמיתיים אחרי הטעינה השנייה של הדוח (צריך שתי תמונות מצב כדי לחשב יממה)"}
         </div>
-        {showAuctionPaste && (
-          <div className="auction-paste" style={{ marginBottom: 14 }}>
-            <div style={{ color: C.dim, fontSize: 12 }}>
-              בגוגל אדס: קמפיינים ← Auction Insights ← הורדה/העתקה, והדביקו כאן (כולל שורת כותרות).
-            </div>
-            <textarea value={auctionPaste} onChange={(e) => setAuctionPaste(e.target.value)} placeholder="Display URL domain	Impression share	Overlap rate	Position above rate	Top of page rate	Outranking share..." />
-            <button className="btn" onClick={loadAuction}>טעינה</button>
-          </div>
-        )}
-        <div className="table-wrap" style={{ marginBottom: 16 }}>
+        <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>דומיין</th><th>נתח חשיפות</th><th>שיעור חפיפה</th><th>מופיע מעליכם</th><th>ראש העמוד</th><th>Outranking</th>
+                <th>כלי / קמפיין</th>
+                <Th k="spent" sort={daySort} setSort={setDaySort}>מומש ביממה</Th>
+                <Th k="gross" sort={daySort} setSort={setDaySort}>לידים ביממה</Th>
+                <Th k="cplDay" sort={daySort} setSort={setDaySort}>עלות לליד יומית</Th>
+                <Th k="quality" sort={daySort} setSort={setDaySort}>איכותיים ביממה</Th>
+                <Th k="cpqlDay" sort={daySort} setSort={setDaySort}>עלות לאיכותי יומית</Th>
+                <th>מגמה</th>
               </tr>
             </thead>
             <tbody>
-              {auction.map((r) => (
-                <tr key={r.domain} className={r.you ? "auction-you" : ""}>
-                  <td style={{ fontWeight: r.you ? 900 : 500 }}>{r.domain}</td>
-                  <td>
-                    <div className="util-cell">
-                      <div className="util-track"><div className="util-fill" style={{ width: `${r.is ?? 0}%`, background: r.you ? C.amber : C.blue }} /></div>
-                      <span style={{ color: C.dim, fontSize: 12, minWidth: 34 }}>{pct(r.is)}</span>
-                    </div>
-                  </td>
-                  <td>{pct(r.overlap)}</td>
-                  <td style={{ color: r.above > 30 ? C.coral : undefined }}>{pct(r.above)}</td>
-                  <td>{pct(r.top)}</td>
-                  <td style={{ color: r.outrank !== null ? (r.outrank >= 60 ? C.teal : C.coral) : undefined }}>{pct(r.outrank)}</td>
-                </tr>
-              ))}
+              {(() => {
+                const src = (dayRows || DEMO_DAY).map((r) => ({
+                  ...r,
+                  cplDay: (r.gross || 0) > 0 ? (r.spent || 0) / r.gross : null,
+                  cpqlDay: (r.quality || 0) > 0 ? (r.spent || 0) / r.quality : null,
+                }));
+                const maxSpent = Math.max(...src.map((r) => r.spent || 0), 1);
+                src.sort((a, b) => {
+                  const va = a[daySort.key], vb = b[daySort.key];
+                  if (va === null || va === undefined) return 1;
+                  if (vb === null || vb === undefined) return -1;
+                  return daySort.dir === "desc" ? vb - va : va - vb;
+                });
+                const trend = (r) => {
+                  if (!isActive(r.name)) return { txt: "כבוי", color: C.dim };
+                  if ((r.quality || 0) > 0) return { txt: "🟢 מייצר איכות", color: C.teal };
+                  if ((r.spent || 0) > 300 && (r.gross || 0) <= 0) return { txt: "🔴 שורף בלי לידים", color: C.coral };
+                  if ((r.gross || 0) > 0) return { txt: "🟡 לידים בלי איכות", color: C.amber };
+                  return { txt: "—", color: C.dim };
+                };
+                return src.map((r) => {
+                  const t = trend(r);
+                  const on = isActive(r.name);
+                  return (
+                    <tr key={`${r.type}-${r.name}`} style={{ opacity: on ? 1 : 0.45 }}>
+                      <td style={{ fontWeight: 700 }}>
+                        {r.name}
+                        <span className="tag" style={{ color: r.type === "חיפוש" ? C.violet : C.blue }}>{r.type}</span>
+                      </td>
+                      <td>
+                        <div className="util-cell">
+                          <div className="util-track"><div className="util-fill" style={{ width: `${((r.spent || 0) / maxSpent) * 100}%`, background: C.amber }} /></div>
+                          <span style={{ minWidth: 60, fontWeight: 700 }}>{nis(r.spent)}</span>
+                        </div>
+                      </td>
+                      <td>{num(r.gross)}</td>
+                      <td>{nis(r.cplDay)}</td>
+                      <td style={{ fontWeight: 700, color: (r.quality || 0) > 0 ? C.teal : undefined }}>{num(r.quality)}</td>
+                      <td>{nis(r.cpqlDay)}</td>
+                      <td style={{ color: t.color, fontSize: 12.5, fontWeight: 700 }}>{t.txt}</td>
+                    </tr>
+                  );
+                });
+              })()}
             </tbody>
           </table>
         </div>
-        <h2 style={{ fontSize: 14 }}>המלצות</h2>
-        <div className="insight-list" style={{ marginTop: 8 }}>
-          {auctionRecs.map((r, i) => (
-            <div key={i} className="insight"><span className="ico">{r.icon}</span><span>{r.text}</span></div>
-          ))}
+        {dayRows && (
+          <div style={{ color: C.dim, fontSize: 12, marginTop: 10 }}>
+            "יממה" = הפרש מאז הטעינה הקודמת. אם טוענים פעם ביום — זו בדיוק יממה. שורות כבויות מוצגות אך לא נכללות בהתראות.
+          </div>
+        )}
+      </div>
+
+      {/* ---------- ארכיון · לוח שנה ---------- */}
+      <div className="panel cal-cta" style={{ marginBottom: 26 }} onClick={() => { refreshDayIndex(); setCalOpen(true); }}>
+        <div>
+          <h2>📆 ארכיון דוחות · לוח שנה</h2>
+          <div className="hint" style={{ marginBottom: 0 }}>
+            {dayIndex.length
+              ? `${dayIndex.length} דוחות שמורים · האחרון: ${dayIndex[dayIndex.length - 1].split("-").reverse().join(".")} · לחצו לפתיחת לוח שנה שנתי`
+              : "כל דוח שנטען נשמר אוטומטית לתאריך של יום קודם · לחצו לפתיחת לוח השנה, צפייה בדוחות קודמים והזנת דוחות לימים ספציפיים"}
+          </div>
         </div>
+        <div className="cal-cta-arrow">◀</div>
       </div>
 
       <div className="foot">
@@ -1238,6 +1333,83 @@ export default function App() {
       </div>
 
       {story && <StoryMode slides={buildSlides(data, totals, delta, insights, isActive)} onClose={() => setStory(false)} onShare={shareStory} />}
+
+      {/* ---------- לוח שנה שנתי ---------- */}
+      {calOpen && (
+        <div className="cal-overlay" dir="rtl" onClick={() => setCalOpen(false)}>
+          <div className="cal-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="cal-head">
+              <div className="cal-year-nav">
+                <button className="btn ghost" onClick={() => setCalYear((y) => y - 1)}>▶ {calYear - 1}</button>
+                <span className="cal-year">{calYear}</span>
+                <button className="btn ghost" onClick={() => setCalYear((y) => y + 1)}>{calYear + 1} ◀</button>
+              </div>
+              <button className="story-close" style={{ position: "static" }} onClick={() => setCalOpen(false)}>✕</button>
+            </div>
+            <div className="cal-legend">
+              <span><span className="cal-dot has" /> יש דוח שמור — לחיצה פותחת אותו</span>
+              <span><span className="cal-dot" /> אין דוח — לחיצה מאפשרת להזין דוח לאותו יום</span>
+            </div>
+            <div className="cal-months">
+              {Array.from({ length: 12 }, (_, mi) => {
+                const monthName = new Date(calYear, mi, 1).toLocaleDateString("he-IL", { month: "long" });
+                const firstDow = new Date(calYear, mi, 1).getDay(); /* 0=ראשון */
+                const daysInM = new Date(calYear, mi + 1, 0).getDate();
+                const todayIso = isoDay(new Date());
+                return (
+                  <div className="cal-month" key={mi}>
+                    <div className="cal-month-name">{monthName}</div>
+                    <div className="cal-grid">
+                      {["א", "ב", "ג", "ד", "ה", "ו", "ש"].map((d) => (
+                        <div key={d} className="cal-dow">{d}</div>
+                      ))}
+                      {Array.from({ length: firstDow }, (_, i) => <div key={"e" + i} />)}
+                      {Array.from({ length: daysInM }, (_, di) => {
+                        const iso = `${calYear}-${String(mi + 1).padStart(2, "0")}-${String(di + 1).padStart(2, "0")}`;
+                        const has = dayIndex.includes(iso);
+                        const isToday = iso === todayIso;
+                        return (
+                          <button
+                            key={iso}
+                            className={`cal-day ${has ? "has" : ""} ${isToday ? "today" : ""}`}
+                            title={has ? "פתיחת הדוח של " + iso : "הזנת דוח ליום " + iso}
+                            onClick={() => (has ? openDay(iso) : (setCalPaste({ date: iso }), setCalPasteText("")))}
+                          >
+                            {di + 1}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- הזנת דוח ליום ספציפי ---------- */}
+      {calPaste && (
+        <div className="share-overlay" onClick={() => setCalPaste(null)}>
+          <div className="share-modal" dir="rtl" onClick={(e) => e.stopPropagation()}>
+            <div className="share-head">
+              <strong>הזנת דוח לתאריך {heDayLabel(calPaste.date)}</strong>
+              <button className="story-close" style={{ position: "static" }} onClick={() => setCalPaste(null)}>✕</button>
+            </div>
+            <div style={{ color: calPaste.error ? C.coral : C.dim, fontSize: 13 }}>
+              {calPaste.error
+                ? "לא זוהה מבנה הדוח — ודאו שהעתקתם את כל הגיליון כולל הכותרות"
+                : "הדביקו את תוכן ה-CSV של הדוח כפי שהיה באותו יום (קובץ ← הורדה ← CSV בגיליון). הדוח יישמר בארכיון לתאריך הזה."}
+            </div>
+            <textarea className="share-text" placeholder="הדביקו כאן את תוכן ה-CSV..."
+                      value={calPasteText} onChange={(e) => setCalPasteText(e.target.value)} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="btn" onClick={() => loadCsv(calPasteText, calPaste.date)}>שמירה לארכיון</button>
+              <button className="btn ghost" onClick={() => setCalPaste(null)}>ביטול</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ---------- חלון שיתוף ---------- */}
       {shareModal && (
