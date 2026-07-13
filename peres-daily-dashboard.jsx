@@ -701,6 +701,17 @@ export default function App() {
     setStatus({ kind: "ok", msg: "חזרת לדוח הנוכחי" });
   }, []);
 
+  /* העלאת קובץ CSV — עובר דרך אותו loadCsv, כולל ארכוב אוטומטי ליום קודם */
+  const handleFile = useCallback((e, targetDay = null) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; /* מאפשר לבחור שוב את אותו קובץ */
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => loadCsv(String(reader.result || ""), targetDay);
+    reader.onerror = () => setStatus({ kind: "err", msg: "קריאת הקובץ נכשלה — נסו שוב" });
+    reader.readAsText(file);
+  }, [loadCsv]);
+
   const fetchSheet = useCallback(async () => {
     const url = toCsvUrl(link);
     if (!url) { setStatus({ kind: "err", msg: "הקישור לא זוהה כקישור Google Sheets תקין" }); return; }
@@ -876,6 +887,8 @@ export default function App() {
         .btn { background: ${C.amber}; color:#1a1206; border:none; border-radius:10px; padding:9px 18px; font-family:inherit; font-weight:700; font-size:14px; cursor:pointer; }
         .btn:hover { filter: brightness(1.08); }
         .btn.ghost { background:transparent; color:${C.dim}; border:1px solid ${C.line}; }
+        .file-btn { display:inline-flex; align-items:center; gap:6px; }
+        .file-btn input[type="file"] { display:none; }
         .btn.story-btn { background: linear-gradient(90deg, ${C.violet}, ${C.blue}); color:#fff; }
         .btn:disabled { opacity:.5; cursor:default; }
         .status { font-size:13px; padding:8px 14px; border-radius:10px; margin:14px 0 20px; border:1px solid ${C.line}; background:${C.panel}; color:${C.dim}; }
@@ -1020,7 +1033,7 @@ export default function App() {
         <div className="connect">
           <strong>הדביקו את הקישור לדוח</strong>
           <div style={{ color: C.dim, fontSize: 12, marginTop: 4 }}>
-            כדי שהדשבורד יוכל לקרוא את הגיליון: בגיליון בחרו <b>קובץ ← שיתוף ← פרסום באינטרנט</b>, בחרו את הלשונית ופורמט <b>CSV</b>, והדביקו כאן את הקישור. כל טעינה נשמרת כתמונת מצב, והטעינה הבאה תציג דלתות מולה.
+            שלוש דרכים לטעון: קישור לגיליון (קובץ ← שיתוף ← פרסום באינטרנט ← CSV), העלאת קובץ CSV, או הדבקה ידנית. בכל שלוש הדרכים הדוח נשמר אוטומטית בארכיון לתאריך של יום קודם, וטעינה נוספת באותו יום מחליפה את הגרסה הקודמת של אותו תאריך — תמיד נשמר העדכון האחרון.
           </div>
           <input placeholder="https://docs.google.com/spreadsheets/d/..." value={link} onChange={(e) => setLink(e.target.value)} />
           <div className="archive-date-row">
@@ -1030,8 +1043,12 @@ export default function App() {
               ברירת מחדל: יום לפני ההעלאה (הדוח משקף את אתמול). שנו רק אם מעלים דוח באיחור.
             </span>
           </div>
-          <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="btn" onClick={fetchSheet}>טעינה מהקישור</button>
+            <label className="btn file-btn">
+              📁 העלאת קובץ CSV
+              <input type="file" accept=".csv,text/csv,text/plain" onChange={(e) => handleFile(e)} />
+            </label>
             <button className="btn ghost" onClick={() => setPasteMode((v) => !v)}>הדבקת נתונים ידנית</button>
           </div>
           {pasteMode && (
@@ -1403,8 +1420,12 @@ export default function App() {
             </div>
             <textarea className="share-text" placeholder="הדביקו כאן את תוכן ה-CSV..."
                       value={calPasteText} onChange={(e) => setCalPasteText(e.target.value)} />
-            <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button className="btn" onClick={() => loadCsv(calPasteText, calPaste.date)}>שמירה לארכיון</button>
+              <label className="btn file-btn">
+                📁 או העלאת קובץ CSV
+                <input type="file" accept=".csv,text/csv,text/plain" onChange={(e) => handleFile(e, calPaste.date)} />
+              </label>
               <button className="btn ghost" onClick={() => setCalPaste(null)}>ביטול</button>
             </div>
           </div>
