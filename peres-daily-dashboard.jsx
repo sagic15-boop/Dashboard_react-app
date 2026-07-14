@@ -11,6 +11,13 @@ import {
 /* ------------------------------------------------------------------ */
 
 const DEMO = {
+  meta: { budget: 677000, spent: 263033, pace: 41.9, utilPct: 38.9, month: "חודש יולי" },
+  harvard: {
+    platforms: [
+      { name: "Linkedin", budget: 40000, spent: 23543.5, gross: 195, cpl: 120.7, quality: 9, cpql: 2615.9, qPct: 4.6, inProc: 70, inProcPct: 35.9 },
+    ],
+    total: { name: "Total", budget: 40000, spent: 23543.5, gross: 195, cpl: 120.7, quality: 9, cpql: 2615.9, qPct: 4.6, inProc: 70, inProcPct: 35.9 },
+  },
   summary: {
     actual: { gross: 2114, quality: 136, qualityPct: 6, cpl: 94, cpql: 1597, inProcess: 699 },
     target: { gross: 3931, quality: 476, qualityPct: 12, cpl: 172, cpql: 1422 },
@@ -42,6 +49,9 @@ const DEMO = {
 };
 
 /* נתוני דוגמה לביצועי יממה — מוצגים רק עד שנשמרות שתי תמונות מצב אמיתיות */
+const DEMO_DAY_HARVARD = [
+  { name: "Linkedin", type: "כלי", spent: 1850, gross: 12, quality: 1 },
+];
 const DEMO_DAY = [
   { name: "PMAX",               type: "כלי",   spent: 2450, gross: 14, quality: 1 },
   { name: "חיפוש",              type: "כלי",   spent: 980,  gross: 31, quality: 3 },
@@ -59,9 +69,17 @@ const DEMO_DAY = [
 const toNum = (v) => {
   if (v === null || v === undefined) return null;
   const s = String(v).replace(/[₪%\s"]/g, "").replace(/,/g, "").trim();
-  if (s === "" || s === "-" || s.includes("#DIV") || s.toUpperCase().includes("N/A")) return null;
+  if (s === "" || s === "-" || s.includes("#DIV") || s.includes("#REF") || s.toUpperCase().includes("N/A")) return null;
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : null;
+};
+
+/* אחוזים: בגיליון חלק מהאחוזים שמורים כשברים (0.069). אם המקור לא הכיל % והערך <= 1.5 — זה שבר */
+const toPct = (raw) => {
+  const n = toNum(raw);
+  if (n === null) return null;
+  if (String(raw).includes("%")) return n;
+  return Math.abs(n) <= 1.5 ? n * 100 : n;
 };
 
 const nis = (v, dec = 0) =>
@@ -135,8 +153,21 @@ const findCol = (cols, ...keys) =>
 
 function parseReport(csvText) {
   const rows = Papa.parse(csvText).data;
-  const out = { summary: null, platforms: [], campaigns: [] };
+  const out = { meta: {}, summary: null, platforms: [], campaigns: [], harvard: null };
 
+  /* --- בלוק מטא עליון: תקציב, קצב קלנדרי, מימוש, חודש --- */
+  for (let i = 0; i < Math.min(rows.length, 16); i++) {
+    const label = String(rows[i][0] || "").trim();
+    const val = rows[i][1];
+    if (label.startsWith("תקציב מדיה") && out.meta.budget === undefined) out.meta.budget = toNum(val);
+    else if (label.startsWith("תקציב שמומש") && out.meta.spent === undefined) out.meta.spent = toNum(val);
+    else if (label.startsWith("קצב התקדמות קלנדרי")) out.meta.pace = toPct(val);
+    else if (label.startsWith("מימוש תקציב")) out.meta.utilPct = toPct(val);
+    else if (label === "קמפיין") out.meta.month = String(val || "").trim();
+    else if (label.startsWith("מועד דיווח")) out.meta.reportDate = String(val || "").trim();
+  }
+
+  /* --- ריכוז עליון: בפועל / יעד --- */
   const sumHdr = rows.findIndex(
     (r) => r.some((c) => String(c).includes("לידים ברוטו")) && r.some((c) => String(c).includes("לידים איכותיים"))
   );
@@ -154,17 +185,21 @@ function parseReport(csvText) {
     const a = pick("בפועל"), t = pick("יעד");
     const read = (r) =>
       r && {
-        gross: toNum(r[ci.gross]), quality: toNum(r[ci.quality]), qualityPct: toNum(r[ci.qualityPct]),
+        gross: toNum(r[ci.gross]), quality: toNum(r[ci.quality]), qualityPct: toPct(r[ci.qualityPct]),
         cpl: toNum(r[ci.cpl]), cpql: toNum(r[ci.cpql]), inProcess: toNum(r[ci.inProcess]),
       };
     if (a && t) out.summary = { actual: read(a), target: read(t) };
   }
 
+  /* שורה "חיה" = יש בה תקציב, מימוש או לידים. מסנן שורות ריקות / #N/A */
+  const alive = (row) => (row.spent || 0) > 0 || (row.budget || 0) > 0 || (row.gross || 0) > 0;
+
+  /* --- טבלת פלטפורמות (BOF) --- */
   const ph = mapHeader(rows, "פלטפורמה");
   if (ph) {
     const c = ph.cols;
     const ci = {
-      name: c.findIndex((x) => x === "פלטפורמה"),
+      name: c.indexOf("פלטפורמה"),
       budget: findCol(c, "תקציב"),
       spent: findCol(c, "תקציב שמומש"),
       gross: findCol(c, "לידים ברוטו"),
@@ -179,22 +214,32 @@ function parseReport(csvText) {
       const r = rows[i];
       const name = String(r[ci.name] || "").trim();
       if (!name) continue;
-      if (/total|סה"כ|סהכ/i.test(name)) break;
-      out.platforms.push({
+      if (/^total$|סה"כ|סהכ/i.test(name)) break;
+      const row = {
         name, budget: toNum(r[ci.budget]) ?? 0, spent: toNum(r[ci.spent]) ?? 0,
         gross: toNum(r[ci.gross]), cpl: toNum(r[ci.cpl]),
         quality: toNum(r[ci.quality]), cpql: toNum(r[ci.cpql]),
-        qPct: toNum(r[ci.qPct]), inProc: toNum(r[ci.inProc]), inProcPct: toNum(r[ci.inProcPct]),
+        qPct: toPct(r[ci.qPct]), inProc: toNum(r[ci.inProc]), inProcPct: toPct(r[ci.inProcPct]),
         drill: name.includes("חיפוש"),
-      });
+      };
+      if (alive(row)) out.platforms.push(row);
     }
   }
 
-  const ch = mapHeader(rows, "קמפיין");
+  /* --- דריל-דאון קמפייני חיפוש --- */
+  /* שורת הכותרת חייבת להכיל גם "קמפיין" וגם "תקציב שמומש" — כדי לא להתבלבל עם בלוק המטא למעלה */
+  let ch = null;
+  for (let i = 0; i < rows.length; i++) {
+    const cells = rows[i].map((x) => String(x || "").trim());
+    if (cells.includes("קמפיין") && cells.some((x) => x.includes("תקציב שמומש"))) {
+      ch = { rowIdx: i, cols: cells };
+      break;
+    }
+  }
   if (ch) {
     const c = ch.cols;
     const ci = {
-      name: c.findIndex((x) => x === "קמפיין"),
+      name: c.indexOf("קמפיין"),
       spent: findCol(c, "תקציב שמומש"),
       share: findCol(c, "נתח מעלות"),
       gross: findCol(c, "לידים ברוטו"),
@@ -209,19 +254,64 @@ function parseReport(csvText) {
       const r = rows[i];
       const name = String(r[ci.name] || "").trim();
       if (!name) continue;
-      if (/total|סה"כ|סהכ/i.test(name)) break;
-      out.campaigns.push({
-        name, spent: toNum(r[ci.spent]), share: toNum(r[ci.share]),
+      if (/^total$|סה"כ|סהכ/i.test(name)) break;
+      const row = {
+        name, spent: toNum(r[ci.spent]), share: toPct(r[ci.share]),
         gross: toNum(r[ci.gross]), cpl: toNum(r[ci.cpl]),
         quality: toNum(r[ci.quality]), cpql: toNum(r[ci.cpql]),
-        qPct: toNum(r[ci.qPct]), inProc: toNum(r[ci.inProc]), inProcPct: toNum(r[ci.inProcPct]),
-      });
+        qPct: toPct(r[ci.qPct]), inProc: toNum(r[ci.inProc]), inProcPct: toPct(r[ci.inProcPct]),
+      };
+      /* מקורות אורגניים (GMB/callbox/Direct) חיים גם בלי תקציב */
+      if (alive(row) || (row.gross || 0) > 0) out.campaigns.push(row);
+    }
+  }
+
+  /* --- הארווארד: סקשן נפרד אחרי כותרת "הארווארד - ריכוז נתונים" --- */
+  const hIdx = rows.findIndex((r) => r.some((c) => String(c).includes("הארווארד") && String(c).includes("ריכוז")));
+  if (hIdx !== -1) {
+    let hh = -1;
+    for (let i = hIdx + 1; i < Math.min(rows.length, hIdx + 12); i++) {
+      if (rows[i].some((x) => String(x || "").trim() === "פלטפורמה")) { hh = i; break; }
+    }
+    if (hh !== -1) {
+      const c = rows[hh].map((x) => String(x || "").trim());
+      const ci = {
+        name: c.indexOf("פלטפורמה"),
+        budget: findCol(c, "תקציב"),
+        spent: findCol(c, "תקציב שמומש"),
+        gross: findCol(c, "לידים ברוטו"),
+        cpl: findCol(c, "עלות ליד ברוטו", "עלות לליד ברוטו"),
+        quality: findCol(c, "לידים איכותיים"),
+        cpql: findCol(c, "עלות ליד איכותי", "עלות לליד איכותי"),
+        qPct: findCol(c, "אחוז איכות"),
+        inProc: findCol(c, "לידים בתהליך"),
+        inProcPct: findCol(c, "אחוז הלידים בתהליך"),
+      };
+      const H = { platforms: [], total: null };
+      for (let i = hh + 1; i < rows.length; i++) {
+        const r = rows[i];
+        const name = String(r[ci.name] || "").trim();
+        if (!name) { if (H.platforms.length || H.total) break; else continue; }
+        const row = {
+          name, budget: toNum(r[ci.budget]) ?? 0, spent: toNum(r[ci.spent]) ?? 0,
+          gross: toNum(r[ci.gross]), cpl: toNum(r[ci.cpl]),
+          quality: toNum(r[ci.quality]), cpql: toNum(r[ci.cpql]),
+          qPct: ci.qPct !== -1 ? toPct(r[ci.qPct]) : null,
+          inProc: toNum(r[ci.inProc]), inProcPct: toPct(r[ci.inProcPct]),
+        };
+        if (row.qPct === null && (row.gross || 0) > 0 && row.quality !== null) row.qPct = (row.quality / row.gross) * 100;
+        if (/^total$|סה"כ/i.test(name)) { H.total = row; break; }
+        if (alive(row)) H.platforms.push(row);
+      }
+      if (H.platforms.length) out.harvard = H;
     }
   }
 
   const ok = out.summary && out.platforms.length > 0;
-  return ok ? { summary: out.summary, platforms: out.platforms, campaigns: out.campaigns.length ? out.campaigns : [] } : null;
+  return ok ? { meta: out.meta, summary: out.summary, platforms: out.platforms, campaigns: out.campaigns, harvard: out.harvard } : null;
 }
+
+export { parseReport };
 
 function toCsvUrl(link) {
   const m = String(link).match(/\/d\/(?:e\/)?([\w-]+)/);
@@ -274,6 +364,25 @@ function computeDelta(curr, prev) {
       quality: cm.quality !== null && old.quality !== null ? cm.quality - old.quality : null,
     };
   });
+  /* הארווארד — דלתות לפלטפורמות + סיכום */
+  d.harvard = {};
+  d.harvardSummary = null;
+  if (curr.harvard && p.harvard) {
+    (curr.harvard.platforms || []).forEach((pl) => {
+      const old = (p.harvard.platforms || []).find((x) => x.name === pl.name);
+      if (old) d.harvard[pl.name] = {
+        spent: (pl.spent || 0) - (old.spent || 0),
+        gross: pl.gross !== null && old.gross !== null ? pl.gross - old.gross : null,
+        quality: pl.quality !== null && old.quality !== null ? pl.quality - old.quality : null,
+      };
+    });
+    const sum = (h) => (h.platforms || []).reduce(
+      (a, b) => ({ spent: a.spent + (b.spent || 0), gross: a.gross + (b.gross || 0), quality: a.quality + (b.quality || 0) }),
+      { spent: 0, gross: 0, quality: 0 }
+    );
+    const cs = sum(curr.harvard), ps = sum(p.harvard);
+    d.harvardSummary = { spent: cs.spent - ps.spent, gross: cs.gross - ps.gross, quality: cs.quality - ps.quality };
+  }
   return d;
 }
 
@@ -422,11 +531,12 @@ function StoryMode({ slides, onClose, onShare }) {
   );
 }
 
-function buildSlides(data, totals, delta, insights, isActive = () => true) {
+function buildSlides(data, totals, delta, insights, isActive = () => true, label = "תארים") {
   const s = data.summary;
   const now = new Date();
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const pace = Math.round((now.getDate() / daysInMonth) * 100);
+  /* קצב קלנדרי — עדיפות לערך מהדוח עצמו (בלוק המטא), אחרת לפי תאריך היום */
+  const pace = data.meta && data.meta.pace != null ? Math.round(data.meta.pace) : Math.round((now.getDate() / daysInMonth) * 100);
   const util = Math.round(totals.util);
   const gap = util - pace;
   const g1 = "linear-gradient(160deg,#0D1626 0%,#1B2B45 100%)";
@@ -470,7 +580,7 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
   const slides = [
     /* 1 — נתונים כלליים: תקציב, קצב קלנדרי, ניצול */
     {
-      kicker: now.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" }) + " · תמונת מצב",
+      kicker: now.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" }) + ` · ${label} · תמונת מצב`,
       big: `${util}% ניצול`,
       color: util >= pace ? C.teal : C.amber,
       rows: [
@@ -492,8 +602,8 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
       big: num(s.actual.gross),
       color: C.blue,
       rows: [
-        { label: "עמידה ביעד", value: `${Math.round((s.actual.gross / s.target.gross) * 100)}% מתוך ${num(s.target.gross)}` },
-        { label: "עלות לליד ברוטו", value: `${nis(s.actual.cpl)} (יעד: ${nis(s.target.cpl)})`, color: s.actual.cpl <= s.target.cpl ? C.teal : C.coral },
+        ...(s.target.gross ? [{ label: "עמידה ביעד", value: `${Math.round((s.actual.gross / s.target.gross) * 100)}% מתוך ${num(s.target.gross)}` }] : []),
+        { label: "עלות לליד ברוטו", value: s.target.cpl ? `${nis(s.actual.cpl)} (יעד: ${nis(s.target.cpl)})` : nis(s.actual.cpl), color: s.target.cpl ? (s.actual.cpl <= s.target.cpl ? C.teal : C.coral) : C.text },
         ...(delta && delta.summary.gross ? [{ label: "לידים ביממה האחרונה", value: `+${num(delta.summary.gross)}`, color: C.teal }] : []),
         topGross
           ? { label: "מוביל היממה", value: `${topGross.name} · ${num(topGross.gross)} לידים (${nis(dayCPL(topGross))} לליד)`, color: C.amber }
@@ -510,9 +620,9 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
       big: num(s.actual.quality),
       color: C.teal,
       rows: [
-        { label: "עמידה ביעד", value: `${Math.round((s.actual.quality / s.target.quality) * 100)}% מתוך ${num(s.target.quality)}` },
-        { label: "אחוז איכות", value: `${pct(s.actual.qualityPct)} (יעד: ${pct(s.target.qualityPct)})`, color: s.actual.qualityPct >= s.target.qualityPct ? C.teal : C.coral },
-        { label: "עלות לליד איכותי", value: `${nis(s.actual.cpql)} (יעד: ${nis(s.target.cpql)})`, color: s.actual.cpql <= s.target.cpql ? C.teal : C.coral },
+        ...(s.target.quality ? [{ label: "עמידה ביעד", value: `${Math.round((s.actual.quality / s.target.quality) * 100)}% מתוך ${num(s.target.quality)}` }] : []),
+        { label: "אחוז איכות", value: s.target.qualityPct ? `${pct(s.actual.qualityPct)} (יעד: ${pct(s.target.qualityPct)})` : pct(s.actual.qualityPct, 1), color: s.target.qualityPct ? (s.actual.qualityPct >= s.target.qualityPct ? C.teal : C.coral) : C.text },
+        { label: "עלות לליד איכותי", value: s.target.cpql ? `${nis(s.actual.cpql)} (יעד: ${nis(s.target.cpql)})` : nis(s.actual.cpql), color: s.target.cpql ? (s.actual.cpql <= s.target.cpql ? C.teal : C.coral) : C.text },
         ...(delta && delta.summary.quality ? [{ label: "איכותיים ביממה האחרונה", value: `+${num(delta.summary.quality)}`, color: C.teal }] : []),
         topQuality
           ? { label: "מוביל היממה", value: `${topQuality.name} · ${num(topQuality.quality)} איכותיים (${nis(dayCPQL(topQuality))} לליד)`, color: C.amber }
@@ -563,7 +673,8 @@ function buildSlides(data, totals, delta, insights, isActive = () => true) {
 /* ------------------------------------------------------------------ */
 
 function KpiCard({ title, actual, target, format, inverse, sub, delta, deltaMoney, deltaSuffix }) {
-  const prog = target ? (inverse ? (target / actual) * 100 : (actual / target) * 100) : null;
+  const hasTarget = target !== null && target !== undefined && target !== 0;
+  const prog = hasTarget ? (inverse ? (target / actual) * 100 : (actual / target) * 100) : null;
   const clamped = prog === null ? null : Math.max(0, Math.min(prog, 130));
   const good = prog !== null && prog >= (inverse ? 100 : 90);
   return (
@@ -573,7 +684,7 @@ function KpiCard({ title, actual, target, format, inverse, sub, delta, deltaMone
         {format(actual)}
         <Delta v={delta} inverse={inverse} money={deltaMoney} suffix={deltaSuffix} />
       </div>
-      <div className="kpi-target">יעד: {format(target)}{sub ? ` · ${sub}` : ""}</div>
+      <div className="kpi-target">{hasTarget ? `יעד: ${format(target)}` : ""}{hasTarget && sub ? " · " : ""}{sub || ""}</div>
       {prog !== null && (
         <div className="kpi-bar-wrap">
           <div className="kpi-bar" style={{ width: `${(clamped / 130) * 100}%`, background: good ? C.teal : prog >= 50 ? C.amber : C.coral }} />
@@ -616,6 +727,7 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = useState(null);
   const [story, setStory] = useState(false);
   const [daySort, setDaySort] = useState({ key: "spent", dir: "desc" });
+  const [board, setBoard] = useState("main"); /* main = תארים · harvard = הארווארד */
   /* ארכיון ולוח שנה */
   const [calOpen, setCalOpen] = useState(false);
   const [calYear, setCalYear] = useState(new Date().getFullYear());
@@ -750,11 +862,15 @@ export default function App() {
       reader.onload = () => {
         try {
           const wb = XLSX.read(reader.result, { type: "array" });
-          /* בוחרים את הלשונית שמכילה את מבנה הדוח; אם לא נמצאה — הראשונה */
+          /* עדיפות ראשונה: הלשונית "נתונים מתחילת החודש". אחרת — הלשונית הראשונה עם מבנה הדוח */
           let chosen = null;
-          for (const name of wb.SheetNames) {
-            const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
-            if (csv.includes("פלטפורמה") && csv.includes("לידים ברוטו")) { chosen = csv; break; }
+          const exact = wb.SheetNames.find((n) => n.trim() === "נתונים מתחילת החודש");
+          if (exact) chosen = XLSX.utils.sheet_to_csv(wb.Sheets[exact]);
+          if (!chosen) {
+            for (const name of wb.SheetNames) {
+              const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
+              if (csv.includes("פלטפורמה") && csv.includes("לידים ברוטו")) { chosen = csv; break; }
+            }
           }
           if (!chosen) chosen = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
           loadCsv(chosen, targetDay);
@@ -786,28 +902,61 @@ export default function App() {
     }
   }, [link, loadCsv]);
 
+  const fullDelta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
+
+  /* ה"חוברת" הפעילה: תארים (הדוח הראשי) או הארווארד — לכל אחת נתונים, דלתות, תובנות וסטורי משלה */
+  const view = useMemo(() => {
+    if (board === "harvard" && data.harvard) {
+      const H = data.harvard;
+      const t = H.total || H.platforms.reduce(
+        (a, b) => ({ spent: (a.spent || 0) + (b.spent || 0), gross: (a.gross || 0) + (b.gross || 0), quality: (a.quality || 0) + (b.quality || 0), inProc: (a.inProc || 0) + (b.inProc || 0) }),
+        { spent: 0, gross: 0, quality: 0, inProc: 0 }
+      );
+      const vData = {
+        meta: data.meta,
+        summary: {
+          actual: {
+            gross: t.gross, quality: t.quality,
+            qualityPct: (t.gross || 0) > 0 && t.quality !== null ? (t.quality / t.gross) * 100 : null,
+            cpl: t.cpl ?? ((t.gross || 0) > 0 ? t.spent / t.gross : null),
+            cpql: t.cpql ?? ((t.quality || 0) > 0 ? t.spent / t.quality : null),
+            inProcess: t.inProc,
+          },
+          target: { gross: null, quality: null, qualityPct: null, cpl: null, cpql: null },
+        },
+        platforms: H.platforms,
+        campaigns: [],
+      };
+      const vDelta = fullDelta
+        ? { date: fullDelta.date, summary: fullDelta.harvardSummary || {}, platforms: fullDelta.harvard || {}, campaigns: {} }
+        : null;
+      return { data: vData, delta: vDelta, label: "הארווארד", isHarvard: true };
+    }
+    return { data, delta: fullDelta, label: "תארים", isHarvard: false };
+  }, [data, fullDelta, board]);
+
+  const delta = view.delta;
+  const s = view.data.summary;
+
   const totals = useMemo(() => {
-    const p = data.platforms;
+    const p = view.data.platforms;
     const budget = p.reduce((s, x) => s + (x.budget || 0), 0);
     const spent = p.reduce((s, x) => s + (x.spent || 0), 0);
     return { budget, spent, util: budget ? (spent / budget) * 100 : 0 };
-  }, [data]);
+  }, [view]);
 
-  const s = data.summary;
-
-  const delta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
-  const insights = useMemo(() => buildInsights(data, delta, isActive), [data, delta, isActive]);
+  const insights = useMemo(() => buildInsights(view.data, view.delta, isActive), [view, isActive]);
   /* שורות ביצועי היממה — כלים + קמפייני חיפוש מתוך הדלתא */
   const dayRows = useMemo(() => {
-    if (!delta) return null;
+    if (!view.delta) return null;
     const rows = [];
-    Object.entries(delta.platforms).forEach(([name, d]) => rows.push({ name, type: "כלי", ...d }));
-    Object.entries(delta.campaigns || {}).forEach(([name, d]) => rows.push({ name, type: "חיפוש", ...d }));
+    Object.entries(view.delta.platforms).forEach(([name, d]) => rows.push({ name, type: "כלי", ...d }));
+    Object.entries(view.delta.campaigns || {}).forEach(([name, d]) => rows.push({ name, type: "חיפוש", ...d }));
     return rows.filter((r) => (r.spent || 0) !== 0 || (r.gross || 0) !== 0 || (r.quality || 0) !== 0);
-  }, [delta]);
+  }, [view]);
 
   const sortedPlatforms = useMemo(() => {
-    const arr = [...data.platforms];
+    const arr = [...view.data.platforms];
     arr.sort((a, b) => {
       const va = a[sort.key], vb = b[sort.key];
       if (va === null || va === undefined) return 1;
@@ -815,25 +964,26 @@ export default function App() {
       return sort.dir === "desc" ? vb - va : va - vb;
     });
     return arr;
-  }, [data, sort]);
+  }, [view, sort]);
 
   const pieData = useMemo(
-    () => data.platforms.filter((p) => p.spent > 0).map((p) => ({ name: p.name, value: p.spent })),
-    [data]
+    () => view.data.platforms.filter((p) => p.spent > 0).map((p) => ({ name: p.name, value: p.spent })),
+    [view]
   );
   const barData = useMemo(
-    () => data.platforms.filter((p) => p.budget > 0 || p.spent > 0).map((p) => ({ name: p.name, "תקציב": p.budget, "מומש": p.spent })),
-    [data]
+    () => view.data.platforms.filter((p) => p.budget > 0 || p.spent > 0).map((p) => ({ name: p.name, "תקציב": p.budget, "מומש": p.spent })),
+    [view]
   );
 
   const runAiInsights = useCallback(async () => {
     setAiLoading(true);
     try {
       const payload = {
-        summary: data.summary,
-        platforms: data.platforms.map((p) => ({ ...p, status: isActive(p.name) ? "active" : "paused_by_user" })),
-        searchCampaigns: data.campaigns.map((c) => ({ ...c, status: isActive(c.name) ? "active" : "paused_by_user" })),
-        deltaSincePreviousReport: delta,
+        board: view.label,
+        summary: view.data.summary,
+        platforms: view.data.platforms.map((p) => ({ ...p, status: isActive(p.name) ? "active" : "paused_by_user" })),
+        searchCampaigns: view.data.campaigns.map((c) => ({ ...c, status: isActive(c.name) ? "active" : "paused_by_user" })),
+        deltaSincePreviousReport: view.delta,
         note: "קמפיינים במצב paused_by_user כבויים כרגע — אל תמליץ עליהם המלצות אופטימיזציה שוטפות; מותר רק להמליץ להפעיל אותם מחדש אם הביצועים ההיסטוריים מצדיקים",
       };
       const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -857,7 +1007,7 @@ export default function App() {
       setAiInsights(["לא הצלחתי להפיק תובנות AI כרגע — נסו שוב בעוד רגע."]);
     }
     setAiLoading(false);
-  }, [data, delta, isActive]);
+  }, [view, isActive]);
 
 
   /* ---------- שיתוף ---------- */
@@ -898,12 +1048,13 @@ export default function App() {
 
   const shareDashboard = useCallback(() => {
     const d = new Date().toLocaleDateString("he-IL", { day: "numeric", month: "long" });
+    const vsT = (a, t) => (t ? ` / יעד ${num(t)} (${Math.round((a / t) * 100)}%)` : "");
     const lines = [
-      `📊 המרכז האקדמי פרס · דשבורד יומי · ${d}`,
+      `📊 המרכז האקדמי פרס · ${view.label} · דשבורד יומי · ${d}`,
       ``,
       `💰 תקציב: ${nis(totals.spent)} מתוך ${nis(totals.budget)} (${Math.round(totals.util)}%)`,
-      `📥 לידים ברוטו: ${num(s.actual.gross)} / יעד ${num(s.target.gross)} (${Math.round((s.actual.gross / s.target.gross) * 100)}%) · ${nis(s.actual.cpl)} לליד`,
-      `⭐ איכותיים: ${num(s.actual.quality)} / יעד ${num(s.target.quality)} (${Math.round((s.actual.quality / s.target.quality) * 100)}%) · ${nis(s.actual.cpql)} לליד · ${pct(s.actual.qualityPct)} איכות`,
+      `📥 לידים ברוטו: ${num(s.actual.gross)}${vsT(s.actual.gross, s.target.gross)} · ${nis(s.actual.cpl)} לליד`,
+      `⭐ איכותיים: ${num(s.actual.quality)}${vsT(s.actual.quality, s.target.quality)} · ${nis(s.actual.cpql)} לליד · ${pct(s.actual.qualityPct, 1)} איכות`,
       `⏳ בתהליך: ${num(s.actual.inProcess)} לידים`,
     ];
     if (delta) {
@@ -912,24 +1063,24 @@ export default function App() {
       if (delta.summary.gross) lines.push(`   לידים חדשים: ${num(delta.summary.gross)}+`);
       if (delta.summary.quality) lines.push(`   איכותיים חדשים: ${num(delta.summary.quality)}+`);
     }
-    const top3 = [...data.platforms].sort((a, b) => (b.spent || 0) - (a.spent || 0)).slice(0, 3);
+    const top3 = [...view.data.platforms].sort((a, b) => (b.spent || 0) - (a.spent || 0)).slice(0, 3);
     lines.push(``, `🏗️ הכלים המובילים במימוש:`);
     top3.forEach((p) => lines.push(`   ${p.name}: ${nis(p.spent)} · ${num(p.gross)} לידים · ${num(p.quality)} איכותיים`));
     if (insights.length) lines.push(``, `💡 ${insights[0].text}`);
-    shareOut("דשבורד יומי — המרכז האקדמי פרס", lines.join("\n"));
-  }, [data, totals, delta, insights, s, shareOut]);
+    shareOut(`דשבורד יומי · ${view.label} — המרכז האקדמי פרס`, lines.join("\n"));
+  }, [view, totals, delta, insights, s, shareOut]);
 
   const shareStory = useCallback(() => {
-    const slides = buildSlides(data, totals, delta, insights, isActive);
-    const lines = [`⚡ הסטורי היומי · המרכז האקדמי פרס · ${new Date().toLocaleDateString("he-IL")}`, ``];
+    const slides = buildSlides(view.data, totals, view.delta, insights, isActive, view.label);
+    const lines = [`⚡ הסטורי היומי · ${view.label} · המרכז האקדמי פרס · ${new Date().toLocaleDateString("he-IL")}`, ``];
     slides.forEach((sl) => {
       lines.push(`◾ ${sl.kicker}: ${sl.big}`);
       if (sl.text) lines.push(`   ${sl.text}`);
       (sl.rows || []).forEach((r) => lines.push(`   • ${r.label}: ${r.value}`));
       lines.push(``);
     });
-    shareOut("הסטורי היומי — המרכז האקדמי פרס", lines.join("\n"));
-  }, [data, totals, delta, insights, isActive, shareOut]);
+    shareOut(`הסטורי היומי · ${view.label} — המרכז האקדמי פרס`, lines.join("\n"));
+  }, [view, totals, insights, isActive, shareOut]);
 
   return (
     <div dir="rtl" className="root">
@@ -948,6 +1099,11 @@ export default function App() {
         .file-btn input[type="file"] { display:none; }
         .btn.story-btn { background: linear-gradient(90deg, ${C.violet}, ${C.blue}); color:#fff; }
         .btn:disabled { opacity:.5; cursor:default; }
+        .board-tabs { display:flex; align-items:center; gap:8px; margin-top:14px; flex-wrap:wrap; }
+        .tab { background:${C.panel}; border:1px solid ${C.line}; color:${C.dim}; border-radius:12px 12px 0 0; padding:9px 22px; font-family:inherit; font-size:14.5px; font-weight:700; cursor:pointer; border-bottom:none; }
+        .tab.on { background:${C.panelSoft}; color:${C.amber}; border-color:${C.amber}; }
+        .tab:hover:not(.on) { color:${C.text}; }
+        .tab-meta { color:${C.dim}; font-size:12px; margin-right:8px; }
         .status { font-size:13px; padding:8px 14px; border-radius:10px; margin:14px 0 20px; border:1px solid ${C.line}; background:${C.panel}; color:${C.dim}; }
         .status.err { border-color:${C.coral}; color:${C.coral}; }
         .status.ok { border-color:${C.teal}; color:${C.teal}; }
@@ -1060,7 +1216,7 @@ export default function App() {
       {/* ---------- כותרת ---------- */}
       <div className="head">
         <div>
-          <h1>המרכז האקדמי פרס · <span>דשבורד יומי</span></h1>
+          <h1>המרכז האקדמי פרס · <span>{view.isHarvard ? "הארווארד" : "דשבורד יומי"}</span></h1>
           <div className="sub">
             {updatedAt ? `עודכן לאחרונה: ${heDate(updatedAt)}` : "מקור: דוח ריכוז נתונים — Google Sheets"}
             {delta && ` · דלתות מול הדוח מ־${heDate(delta.date)}`}
@@ -1076,12 +1232,31 @@ export default function App() {
         </div>
       </div>
 
+      <div className="board-tabs">
+        <button className={`tab ${board === "main" ? "on" : ""}`} onClick={() => setBoard("main")}>🎓 תארים</button>
+        <button className={`tab ${board === "harvard" ? "on" : ""}`} onClick={() => setBoard("harvard")}>
+          🏛️ הארווארד{!data.harvard ? " (אין נתונים)" : ""}
+        </button>
+        {view.data.meta && view.data.meta.month && (
+          <span className="tab-meta">{view.data.meta.month}{view.data.meta.reportDate ? ` · מועד דיווח: ${view.data.meta.reportDate}` : ""}</span>
+        )}
+      </div>
+
       <div className={`status ${status.kind === "err" ? "err" : status.kind === "ok" ? "ok" : ""}`}>{status.msg}</div>
 
       {viewingDay && (
         <div className="hist-banner">
           <span>🕰️ אתה צופה בדוח מהארכיון — <b>{heDayLabel(viewingDay)}</b></span>
           <button className="btn" onClick={backToToday}>חזרה לדוח הנוכחי</button>
+        </div>
+      )}
+
+      {board === "harvard" && !data.harvard && (
+        <div className="panel" style={{ marginBottom: 26 }}>
+          <h2>🏛️ הארווארד</h2>
+          <div className="hint" style={{ marginBottom: 0 }}>
+            בדוח הנוכחי לא נמצא סקשן "הארווארד - ריכוז נתונים". טענו דוח שמכיל אותו — והחוברת תתמלא אוטומטית עם KPI, טבלה, תובנות וסטורי משלה.
+          </div>
         </div>
       )}
 
@@ -1172,7 +1347,11 @@ export default function App() {
                 <Tooltip
                   contentStyle={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text }}
                   labelStyle={{ color: C.text, fontWeight: 700 }} itemStyle={{ color: C.text }}
-                  formatter={(v) => nis(v)}
+                  formatter={(v, n, props) => {
+                    const budget = props && props.payload ? props.payload["תקציב"] : 0;
+                    if (n === "מומש" && budget > 0) return [`${nis(v)} (${Math.round((v / budget) * 100)}% מימוש)`, n];
+                    return [nis(v), n];
+                  }}
                 />
                 <Bar dataKey="תקציב" fill={C.panelSoft} stroke={C.line} radius={[4, 0, 0, 4]} barSize={10} />
                 <Bar dataKey="מומש" fill={C.amber} radius={[4, 0, 0, 4]} barSize={10} />
@@ -1213,9 +1392,11 @@ export default function App() {
       </div>
 
       {/* ---------- טבלת כלים ---------- */}
-      <div className="panel" style={{ borderRadius: drillOpen ? "14px 14px 0 0" : 14 }}>
-        <h2>ביצועים לפי כלי (BOF)</h2>
-        <div className="hint">לחיצה על כותרת ממיינת · לחיצה על שורת "חיפוש" פותחת דריל־דאון · חצים ירוקים/אדומים = שינוי מאז הדוח הקודם</div>
+      <div className="panel" style={{ borderRadius: drillOpen && !view.isHarvard && view.data.campaigns.length > 0 ? "14px 14px 0 0" : 14 }}>
+        <h2>{view.isHarvard ? "הארווארד · ביצועים לפי כלי" : "ביצועים לפי כלי (BOF)"}</h2>
+        <div className="hint">{view.isHarvard
+          ? "לחיצה על כותרת ממיינת · חצים ירוקים/אדומים = שינוי מאז הדוח הקודם"
+          : 'לחיצה על כותרת ממיינת · לחיצה על שורת "חיפוש" פותחת דריל־דאון · חצים ירוקים/אדומים = שינוי מאז הדוח הקודם'}</div>
         <div className="table-wrap">
           <table>
             <thead>
@@ -1272,7 +1453,7 @@ export default function App() {
       </div>
 
       {/* ---------- דריל-דאון חיפוש ---------- */}
-      {drillOpen && (
+      {drillOpen && !view.isHarvard && view.data.campaigns.length > 0 && (
         <div className="drill">
           <h2 style={{ fontSize: 15, fontWeight: 700, margin: "4px 0 2px" }}>דריל־דאון · קמפייני גוגל חיפוש</h2>
           <div style={{ color: C.dim, fontSize: 12, marginBottom: 10 }}>פירוט הקמפיינים המרכיבים את כלי החיפוש, כולל מקורות אורגניים (GMB / callbox / Direct)</div>
@@ -1314,11 +1495,11 @@ export default function App() {
       )}
 
       {/* ---------- ביצועי היממה האחרונה (דלתא) ---------- */}
-      <div className="panel" style={{ marginBottom: 26, marginTop: drillOpen ? 0 : 26 }}>
-        <h2>📅 ביצועי קמפיינים · היממה האחרונה</h2>
+      <div className="panel" style={{ marginBottom: 26, marginTop: drillOpen && !view.isHarvard && view.data.campaigns.length > 0 ? 0 : 26 }}>
+        <h2>📅 ביצועי קמפיינים · היממה האחרונה{view.isHarvard ? " · הארווארד" : ""}</h2>
         <div className="hint">
           {dayRows
-            ? `השינוי בין הדוח הנוכחי לדוח מ־${heDate(delta.date)} — מה כל כלי וקמפיין עשה בפועל ביממה · לחיצה על כותרת ממיינת`
+            ? `השינוי בין הדוח הנוכחי לדוח מ־${heDate(delta.date)} — ${view.isHarvard ? "כלי הארווארד בלבד" : "מה כל כלי וקמפיין עשה בפועל ביממה"} · לחיצה על כותרת ממיינת`
             : "נתוני דוגמה להמחשה — הטבלה תתמלא אוטומטית בנתונים אמיתיים אחרי הטעינה השנייה של הדוח (צריך שתי תמונות מצב כדי לחשב יממה)"}
         </div>
         <div className="table-wrap">
@@ -1336,7 +1517,7 @@ export default function App() {
             </thead>
             <tbody>
               {(() => {
-                const src = (dayRows || DEMO_DAY).map((r) => ({
+                const src = (dayRows || (view.isHarvard ? DEMO_DAY_HARVARD : DEMO_DAY)).map((r) => ({
                   ...r,
                   cplDay: (r.gross || 0) > 0 ? (r.spent || 0) / r.gross : null,
                   cpqlDay: (r.quality || 0) > 0 ? (r.spent || 0) / r.quality : null,
@@ -1406,7 +1587,7 @@ export default function App() {
         ירוק = איכות ≥10% · צהוב = 6–10% · אדום = מתחת ל־6% · הקו הלבן בכרטיסי היעד מסמן 100% עמידה ביעד · ▲▼ = שינוי מאז הדוח הקודם
       </div>
 
-      {story && <StoryMode slides={buildSlides(data, totals, delta, insights, isActive)} onClose={() => setStory(false)} onShare={shareStory} />}
+      {story && <StoryMode slides={buildSlides(view.data, totals, view.delta, insights, isActive, view.label)} onClose={() => setStory(false)} onShare={shareStory} />}
 
       {/* ---------- לוח שנה שנתי ---------- */}
       {calOpen && (
