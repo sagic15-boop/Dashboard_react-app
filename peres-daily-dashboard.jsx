@@ -313,13 +313,25 @@ function parseReport(csvText) {
 
 export { parseReport };
 
-function toCsvUrl(link) {
+/* מהקישור נגזרים כמה מסלולי גישה — מנסים אותם לפי הסדר עד שאחד מצליח */
+function toCsvUrls(link) {
   const m = String(link).match(/\/d\/(?:e\/)?([\w-]+)/);
-  if (!m) return null;
+  if (!m) return [];
+  const id = m[1];
   const gid = (String(link).match(/[#&?]gid=(\d+)/) || [])[1] || "0";
-  if (link.includes("/d/e/")) return `https://docs.google.com/spreadsheets/d/e/${m[1]}/pub?output=csv&gid=${gid}`;
-  return `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv&gid=${gid}`;
+  if (link.includes("/d/e/")) return [`https://docs.google.com/spreadsheets/d/e/${id}/pub?output=csv&gid=${gid}`];
+  return [
+    `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`,
+    `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`,
+  ];
 }
+
+/* fetch עם timeout — כדי שבקשה תקועה לא תקפיא את הכפתורים לנצח */
+const fetchWithTimeout = (url, ms = 15000) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal, redirect: "follow" }).finally(() => clearTimeout(t));
+};
 
 /* קידוד/פענוח מצב הדשבורד לתוך קישור (hash) — הקישור נושא את הנתונים עצמם */
 const encodeState = (obj) =>
@@ -729,6 +741,7 @@ export default function App() {
   const [daySort, setDaySort] = useState({ key: "spent", dir: "desc" });
   const [board, setBoard] = useState("main"); /* main = תארים · harvard = הארווארד */
   const [autoSync, setAutoSync] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [pendingAutoFetch, setPendingAutoFetch] = useState(null);
   /* ארכיון ולוח שנה */
   const [calOpen, setCalOpen] = useState(false);
@@ -957,20 +970,31 @@ export default function App() {
   }, [pendingAutoFetch]);
 
   const fetchFromLink = useCallback(async (theLink, silent = false) => {
-    const url = toCsvUrl(theLink);
-    if (!url) { if (!silent) setStatus({ kind: "err", msg: "הקישור לא זוהה כקישור Google Sheets תקין" }); return; }
+    const urls = toCsvUrls(theLink);
+    if (!urls.length) { if (!silent) setStatus({ kind: "err", msg: "הקישור לא זוהה כקישור Google Sheets תקין" }); return; }
+    setLoading(true);
     setStatus({ kind: "load", msg: silent ? "מסנכרן אוטומטית מהגיליון…" : "טוען נתונים מהגיליון…" });
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(res.status);
-      await loadCsv(await res.text());
-      await store.set("peres:link", theLink); /* הקישור נשמר לסנכרון עתידי */
-    } catch {
+    let ok = false;
+    for (const url of urls) {
+      try {
+        const res = await fetchWithTimeout(url, 15000);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const text = await res.text();
+        /* אם חזר HTML (עמוד התחברות של גוגל) — הגיליון לא נגיש, מנסים מסלול הבא */
+        if (/^\s*</.test(text)) throw new Error("not-csv");
+        await loadCsv(text);
+        await store.set("peres:link", theLink);
+        ok = true;
+        break;
+      } catch { /* מנסים את המסלול הבא */ }
+    }
+    setLoading(false);
+    if (!ok) {
       setStatus({
         kind: "err",
         msg: silent
-          ? "הסנכרון האוטומטי מהגיליון נכשל — בדקו שהגיליון עדיין מפורסם באינטרנט (קובץ ← שיתוף ← פרסום באינטרנט ← CSV)"
-          : "לא ניתן לגשת לגיליון ישירות מכאן. פתרון: בגיליון בחרו קובץ ← שיתוף ← פרסום באינטרנט ← CSV, והדביקו את הקישור שנוצר. לחלופין — הדביקו את הנתונים ידנית למטה.",
+          ? "הסנכרון האוטומטי נכשל — ודאו שהגיליון משותף (כל מי שיש לו קישור → צפייה) או מפורסם כ-CSV (קובץ ← שיתוף ← פרסום באינטרנט)"
+          : "לא הצלחתי למשוך את הגיליון (הבקשה נחסמה או שאין הרשאה). שתי דרכים לפתור: (1) בגיליון: שיתוף ← כל מי שיש לו קישור ← צפייה, ואז נסו שוב. (2) הדרך האמינה ביותר: קובץ ← שיתוף ← פרסום באינטרנט ← בחרו את הלשונית + CSV, והדביקו כאן את הקישור שנוצר. לחלופין — העלו קובץ או הדביקו ידנית.",
       });
       if (!silent) setPasteMode(true);
     }
@@ -1316,7 +1340,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button className="btn story-btn" onClick={() => setStory(true)}>▶ הסטורי היומי</button>
           <button className="btn ghost" onClick={shareDashboard}>📤 שיתוף הדשבורד</button>
-          {link && <button className="btn ghost" onClick={fetchSheet}>🔄 סנכרון עכשיו</button>}
+          {link && <button className="btn ghost" disabled={loading} onClick={fetchSheet}>{loading ? "⏳ מסנכרן…" : "🔄 סנכרון עכשיו"}</button>}
           <button className="btn" onClick={() => setShowConnect((v) => !v)}>
             {showConnect ? "סגירה" : "חיבור הגיליון"}
           </button>
@@ -1375,7 +1399,7 @@ export default function App() {
             🔄 סנכרון אוטומטי — הנתונים יימשכו מהקישור השמור בכל פתיחה של הדשבורד, וגם מדי יום ב־10:00 (כשהדשבורד פתוח בדפדפן)
           </label>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button className="btn" onClick={fetchSheet}>טעינה מהקישור</button>
+            <button className="btn" disabled={loading} onClick={fetchSheet}>{loading ? "⏳ טוען…" : "טעינה מהקישור"}</button>
             <label className="btn file-btn">
               📁 העלאת קובץ CSV / XLSX
               <input type="file" accept=".csv,.xlsx,.xlsm,.xls,text/csv,text/plain" onChange={(e) => handleFile(e)} />
