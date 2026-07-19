@@ -728,6 +728,8 @@ export default function App() {
   const [story, setStory] = useState(false);
   const [daySort, setDaySort] = useState({ key: "spent", dir: "desc" });
   const [board, setBoard] = useState("main"); /* main = תארים · harvard = הארווארד */
+  const [autoSync, setAutoSync] = useState(false);
+  const [pendingAutoFetch, setPendingAutoFetch] = useState(null);
   /* ארכיון ולוח שנה */
   const [calOpen, setCalOpen] = useState(false);
   const [calYear, setCalYear] = useState(new Date().getFullYear());
@@ -778,6 +780,11 @@ export default function App() {
           }
         }
       } catch {}
+      const savedLink = await store.get("peres:link");
+      if (savedLink) setLink(savedLink);
+      const savedAuto = await store.get("peres:autosync");
+      if (savedAuto) setAutoSync(true);
+      if (savedAuto && savedLink) setPendingAutoFetch(savedLink);
       const latest = await store.get("peres:latest");
       const prev = await store.get("peres:previous");
       const savedActive = await store.get("peres:active");
@@ -885,22 +892,94 @@ export default function App() {
     }
   }, [loadCsv]);
 
-  const fetchSheet = useCallback(async () => {
-    const url = toCsvUrl(link);
-    if (!url) { setStatus({ kind: "err", msg: "הקישור לא זוהה כקישור Google Sheets תקין" }); return; }
-    setStatus({ kind: "load", msg: "טוען נתונים מהגיליון…" });
+  /* גיבוי/ייבוא ארכיון — מאפשר לסנכרן את כל הדוחות בין דפדפנים ומחשבים */
+  const exportArchive = useCallback(async () => {
+    const keys = await store.list("peres:");
+    const dump = {};
+    for (const k of keys) { const v = await store.get(k); if (v !== null) dump[k] = v; }
+    const blob = new Blob(
+      [JSON.stringify({ app: "peres-dashboard", exportedAt: new Date().toISOString(), data: dump })],
+      { type: "application/json" }
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `peres-archive-${isoDay(new Date())}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    setStatus({ kind: "ok", msg: `גיבוי הארכיון ירד כקובץ (${Object.keys(dump).length} רשומות). פתחו את הדשבורד בדפדפן אחר ולחצו "ייבוא" כדי לסנכרן.` });
+  }, []);
+
+  const importArchive = useCallback((e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = async () => {
+      try {
+        const j = JSON.parse(String(r.result));
+        const entries = Object.entries(j.data || {});
+        if (!entries.length) throw new Error();
+        for (const [k, v] of entries) if (k.startsWith("peres:") && v !== null) await store.set(k, v);
+        await refreshDayIndex();
+        await backToToday();
+        setStatus({ kind: "ok", msg: `הארכיון יובא בהצלחה (${entries.length} רשומות) — כל הדוחות זמינים עכשיו גם כאן` });
+      } catch {
+        setStatus({ kind: "err", msg: "קובץ הגיבוי לא תקין — ודאו שזה קובץ שיוצא מכפתור הגיבוי" });
+      }
+    };
+    r.readAsText(f);
+  }, [refreshDayIndex, backToToday]);
+
+  /* סנכרון יומי מתוזמן: כל עוד הדשבורד פתוח, מדי דקה נבדק אם עברה השעה 10:00 והיום טרם סונכרן */
+  useEffect(() => {
+    if (!autoSync || !link) return;
+    const tick = async () => {
+      const now = new Date();
+      if (now.getHours() < 10) return;
+      const today = isoDay(now);
+      const last = await store.get("peres:lastAutoSyncDay");
+      if (last === today) return;
+      await store.set("peres:lastAutoSyncDay", today);
+      if (fetchFromLinkRef.current) fetchFromLinkRef.current(link, true);
+    };
+    tick();
+    const id = setInterval(tick, 60000);
+    return () => clearInterval(id);
+  }, [autoSync, link]);
+
+  /* סנכרון אוטומטי בפתיחה — רץ פעם אחת כשיש קישור שמור והאפשרות מופעלת */
+  useEffect(() => {
+    if (pendingAutoFetch && fetchFromLinkRef.current) {
+      const l = pendingAutoFetch;
+      setPendingAutoFetch(null);
+      fetchFromLinkRef.current(l, true);
+    }
+  }, [pendingAutoFetch]);
+
+  const fetchFromLink = useCallback(async (theLink, silent = false) => {
+    const url = toCsvUrl(theLink);
+    if (!url) { if (!silent) setStatus({ kind: "err", msg: "הקישור לא זוהה כקישור Google Sheets תקין" }); return; }
+    setStatus({ kind: "load", msg: silent ? "מסנכרן אוטומטית מהגיליון…" : "טוען נתונים מהגיליון…" });
     try {
       const res = await fetch(url);
       if (!res.ok) throw new Error(res.status);
-      loadCsv(await res.text());
+      await loadCsv(await res.text());
+      await store.set("peres:link", theLink); /* הקישור נשמר לסנכרון עתידי */
     } catch {
       setStatus({
         kind: "err",
-        msg: "לא ניתן לגשת לגיליון ישירות מכאן. פתרון: בגיליון בחרו קובץ ← שיתוף ← פרסום באינטרנט ← CSV, והדביקו את הקישור שנוצר. לחלופין — הדביקו את הנתונים ידנית למטה.",
+        msg: silent
+          ? "הסנכרון האוטומטי מהגיליון נכשל — בדקו שהגיליון עדיין מפורסם באינטרנט (קובץ ← שיתוף ← פרסום באינטרנט ← CSV)"
+          : "לא ניתן לגשת לגיליון ישירות מכאן. פתרון: בגיליון בחרו קובץ ← שיתוף ← פרסום באינטרנט ← CSV, והדביקו את הקישור שנוצר. לחלופין — הדביקו את הנתונים ידנית למטה.",
       });
-      setPasteMode(true);
+      if (!silent) setPasteMode(true);
     }
-  }, [link, loadCsv]);
+  }, [loadCsv]);
+
+  const fetchFromLinkRef = React.useRef(null);
+  fetchFromLinkRef.current = fetchFromLink;
+
+  const fetchSheet = useCallback(() => fetchFromLink(link), [link, fetchFromLink]);
 
   const fullDelta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
 
@@ -1086,7 +1165,12 @@ export default function App() {
     <div dir="rtl" className="root">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;700;900&display=swap');
-        * { box-sizing: border-box; margin: 0; }
+        * { box-sizing: border-box; margin: 0; scrollbar-width: thin; scrollbar-color: ${C.panelSoft} transparent; }
+        ::-webkit-scrollbar { height: 8px; width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: ${C.panelSoft}; border-radius: 8px; border: 1px solid ${C.line}; }
+        ::-webkit-scrollbar-thumb:hover { background: ${C.line}; }
+        ::-webkit-scrollbar-corner { background: transparent; }
         .root { min-height: 100vh; background: ${C.bg}; color: ${C.text}; font-family: 'Heebo', system-ui, sans-serif; padding: 24px clamp(12px, 3vw, 40px) 60px; font-feature-settings: 'tnum'; }
         .head { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; justify-content:space-between; margin-bottom: 6px; }
         h1 { font-size: clamp(20px, 2.6vw, 30px); font-weight: 900; letter-spacing: -0.5px; }
@@ -1111,6 +1195,8 @@ export default function App() {
         .connect input, .connect textarea { width:100%; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:10px; padding:10px 12px; font-family:inherit; font-size:14px; margin:8px 0; direction:ltr; }
         .connect textarea { min-height:110px; font-size:12px; }
         .archive-date-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:2px 0 10px; font-size:13px; }
+        .autosync { display:flex; align-items:center; gap:8px; font-size:13px; color:${C.text}; margin:2px 0 10px; cursor:pointer; }
+        .autosync input { accent-color:${C.amber}; width:16px; height:16px; cursor:pointer; }
         .archive-date-row input[type="date"] { width:auto; background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:8px; padding:6px 10px; font-family:inherit; font-size:13px; margin:0; color-scheme:dark; }
         .grid-kpi { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:14px; margin-bottom:26px; }
         .kpi { background:${C.panel}; border:1px solid ${C.line}; border-radius:14px; padding:16px 18px 14px; }
@@ -1135,6 +1221,7 @@ export default function App() {
         .util-cell { display:flex; align-items:center; gap:8px; }
         .util-track { flex:1; min-width:70px; height:5px; background:${C.panelSoft}; border-radius:3px; overflow:hidden; }
         .util-fill { height:100%; border-radius:3px; }
+        .group-row td { background:${C.panelSoft}; font-size:13px; font-weight:900; border-bottom:1px solid ${C.line}; padding-top:11px; padding-bottom:11px; }
         .tag { font-size:11px; background:${C.panelSoft}; color:${C.amber}; border-radius:6px; padding:2px 8px; margin-right:8px; font-weight:700; }
         .drill { margin-top:-10px; margin-bottom:26px; border:1px solid ${C.line}; border-top:none; border-radius:0 0 14px 14px; background:${C.panelSoft}; padding:14px 18px 18px; }
         .table-wrap { overflow-x:auto; }
@@ -1165,9 +1252,13 @@ export default function App() {
         .story-share { background:rgba(255,255,255,.12); border:none; color:#fff; height:32px; padding:0 14px; border-radius:16px; cursor:pointer; font-size:13px; font-family:inherit; font-weight:700; }
         .story-share:hover { background:rgba(255,255,255,.22); }
         .story-paused-tag { position:absolute; top:64px; right:16px; z-index:3; font-size:11.5px; color:${C.amber}; background:rgba(245,184,65,.12); border:1px solid rgba(245,184,65,.4); border-radius:8px; padding:3px 10px; }
-        .switch { border:none; border-radius:12px; padding:3px 10px; font-family:inherit; font-size:11px; font-weight:900; cursor:pointer; margin-left:8px; vertical-align:middle; }
-        .switch.on { background:rgba(55,201,169,.15); color:${C.teal}; border:1px solid rgba(55,201,169,.45); }
-        .switch.off { background:rgba(240,104,95,.13); color:${C.coral}; border:1px solid rgba(240,104,95,.45); }
+        .switch { position:relative; width:36px; height:19px; border-radius:12px; padding:0; cursor:pointer; margin-left:10px; vertical-align:middle; transition:background .25s, border-color .25s, box-shadow .25s; }
+        .switch::after { content:""; position:absolute; top:2px; width:13px; height:13px; border-radius:50%; transition:right .25s, background .25s, box-shadow .25s; }
+        .switch.on { background:rgba(55,201,169,.28); border:1px solid ${C.teal}; box-shadow:0 0 10px rgba(55,201,169,.25); }
+        .switch.on::after { right:3px; background:${C.teal}; box-shadow:0 0 6px rgba(55,201,169,.8); }
+        .switch.off { background:${C.panelSoft}; border:1px solid ${C.line}; }
+        .switch.off::after { right:19px; background:${C.dim}; }
+        .switch:hover { border-color:${C.amber}; }
         .share-overlay { position:fixed; inset:0; background:rgba(5,10,20,.8); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:200; padding:16px; }
         .share-modal { background:${C.panel}; border:1px solid ${C.line}; border-radius:16px; padding:18px; width:min(560px, 96vw); display:flex; flex-direction:column; gap:12px; box-shadow:0 30px 80px rgba(0,0,0,.6); }
         .share-head { display:flex; justify-content:space-between; align-items:center; }
@@ -1225,7 +1316,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button className="btn story-btn" onClick={() => setStory(true)}>▶ הסטורי היומי</button>
           <button className="btn ghost" onClick={shareDashboard}>📤 שיתוף הדשבורד</button>
-          {status.kind === "ok" && link && <button className="btn ghost" onClick={fetchSheet}>רענון ⟳</button>}
+          {link && <button className="btn ghost" onClick={fetchSheet}>🔄 סנכרון עכשיו</button>}
           <button className="btn" onClick={() => setShowConnect((v) => !v)}>
             {showConnect ? "סגירה" : "חיבור הגיליון"}
           </button>
@@ -1275,6 +1366,14 @@ export default function App() {
               ברירת מחדל: יום לפני ההעלאה (הדוח משקף את אתמול). שנו רק אם מעלים דוח באיחור.
             </span>
           </div>
+          <label className="autosync">
+            <input type="checkbox" checked={autoSync} onChange={async (e) => {
+              setAutoSync(e.target.checked);
+              await store.set("peres:autosync", e.target.checked);
+              if (e.target.checked && link) await store.set("peres:link", link);
+            }} />
+            🔄 סנכרון אוטומטי — הנתונים יימשכו מהקישור השמור בכל פתיחה של הדשבורד, וגם מדי יום ב־10:00 (כשהדשבורד פתוח בדפדפן)
+          </label>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="btn" onClick={fetchSheet}>טעינה מהקישור</button>
             <label className="btn file-btn">
@@ -1422,10 +1521,9 @@ export default function App() {
                   <tr key={p.name} className={p.drill ? "click" : ""} style={{ opacity: on ? 1 : 0.45 }}
                       onClick={() => p.drill && setDrillOpen((v) => !v)}>
                     <td style={{ fontWeight: 700 }}>
-                      <button className={`switch ${on ? "on" : "off"}`} title={on ? "סמנו ככבוי כדי להתעלם ממנו בתובנות" : "מסומן ככבוי — לא נכלל בהתראות"}
-                              onClick={(e) => { e.stopPropagation(); toggleActive(p.name); }}>
-                        {on ? "פעיל" : "כבוי"}
-                      </button>
+                      <button className={`switch ${on ? "on" : "off"}`} aria-label={on ? "פעיל" : "כבוי"}
+                              title={on ? "פעיל — לחיצה מסמנת ככבוי (יוחרג מתובנות והתראות)" : "כבוי — לחיצה מחזירה לפעיל"}
+                              onClick={(e) => { e.stopPropagation(); toggleActive(p.name); }} />
                       {p.name}{p.drill && <span className="tag">{drillOpen ? "דריל־דאון ▴" : "דריל־דאון ▾"}</span>}
                     </td>
                     <td>{p.budget ? nis(p.budget) : "—"}</td>
@@ -1471,10 +1569,9 @@ export default function App() {
                   return (
                     <tr key={cmp.name} style={{ opacity: on ? 1 : 0.45 }}>
                       <td style={{ fontWeight: 700 }}>
-                        <button className={`switch ${on ? "on" : "off"}`} title={on ? "סמנו ככבוי כדי להתעלם ממנו בתובנות" : "מסומן ככבוי — לא נכלל בהתראות"}
-                                onClick={() => toggleActive(cmp.name)}>
-                          {on ? "פעיל" : "כבוי"}
-                        </button>
+                        <button className={`switch ${on ? "on" : "off"}`} aria-label={on ? "פעיל" : "כבוי"}
+                                title={on ? "פעיל — לחיצה מסמנת ככבוי (יוחרג מתובנות והתראות)" : "כבוי — לחיצה מחזירה לפעיל"}
+                                onClick={() => toggleActive(cmp.name)} />
                         {cmp.name}
                       </td>
                       <td>{nis(cmp.spent)}</td>
@@ -1502,67 +1599,79 @@ export default function App() {
             ? `השינוי בין הדוח הנוכחי לדוח מ־${heDate(delta.date)} — ${view.isHarvard ? "כלי הארווארד בלבד" : "מה כל כלי וקמפיין עשה בפועל ביממה"} · לחיצה על כותרת ממיינת`
             : "נתוני דוגמה להמחשה — הטבלה תתמלא אוטומטית בנתונים אמיתיים אחרי הטעינה השנייה של הדוח (צריך שתי תמונות מצב כדי לחשב יממה)"}
         </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>כלי / קמפיין</th>
-                <Th k="spent" sort={daySort} setSort={setDaySort}>מומש ביממה</Th>
-                <Th k="gross" sort={daySort} setSort={setDaySort}>לידים ביממה</Th>
-                <Th k="cplDay" sort={daySort} setSort={setDaySort}>עלות לליד יומית</Th>
-                <Th k="quality" sort={daySort} setSort={setDaySort}>איכותיים ביממה</Th>
-                <Th k="cpqlDay" sort={daySort} setSort={setDaySort}>עלות לאיכותי יומית</Th>
-                <th>מגמה</th>
+        {(() => {
+          const base = (dayRows || (view.isHarvard ? DEMO_DAY_HARVARD : DEMO_DAY)).map((r) => ({
+            ...r,
+            cplDay: (r.gross || 0) > 0 ? (r.spent || 0) / r.gross : null,
+            cpqlDay: (r.quality || 0) > 0 ? (r.spent || 0) / r.quality : null,
+          }));
+          const sortRows = (arr) => [...arr].sort((a, b) => {
+            const va = a[daySort.key], vb = b[daySort.key];
+            if (va === null || va === undefined) return 1;
+            if (vb === null || vb === undefined) return -1;
+            return daySort.dir === "desc" ? vb - va : va - vb;
+          });
+          const trend = (r) => {
+            if (!isActive(r.name)) return { txt: "כבוי", color: C.dim };
+            if ((r.quality || 0) > 0) return { txt: "🟢 מייצר איכות", color: C.teal };
+            if ((r.spent || 0) > 300 && (r.gross || 0) <= 0) return { txt: "🔴 שורף בלי לידים", color: C.coral };
+            if ((r.gross || 0) > 0) return { txt: "🟡 לידים בלי איכות", color: C.amber };
+            return { txt: "—", color: C.dim };
+          };
+          const rowsFor = (rows, maxSpent) => sortRows(rows).map((r) => {
+            const t = trend(r);
+            const on = isActive(r.name);
+            return (
+              <tr key={`${r.type}-${r.name}`} style={{ opacity: on ? 1 : 0.45 }}>
+                <td style={{ fontWeight: 700 }}>{r.name}</td>
+                <td>
+                  <div className="util-cell">
+                    <div className="util-track"><div className="util-fill" style={{ width: `${((r.spent || 0) / maxSpent) * 100}%`, background: C.amber }} /></div>
+                    <span style={{ minWidth: 60, fontWeight: 700 }}>{nis(r.spent)}</span>
+                  </div>
+                </td>
+                <td>{num(r.gross)}</td>
+                <td>{nis(r.cplDay)}</td>
+                <td style={{ fontWeight: 700, color: (r.quality || 0) > 0 ? C.teal : undefined }}>{num(r.quality)}</td>
+                <td>{nis(r.cpqlDay)}</td>
+                <td style={{ color: t.color, fontSize: 12.5, fontWeight: 700 }}>{t.txt}</td>
               </tr>
-            </thead>
-            <tbody>
-              {(() => {
-                const src = (dayRows || (view.isHarvard ? DEMO_DAY_HARVARD : DEMO_DAY)).map((r) => ({
-                  ...r,
-                  cplDay: (r.gross || 0) > 0 ? (r.spent || 0) / r.gross : null,
-                  cpqlDay: (r.quality || 0) > 0 ? (r.spent || 0) / r.quality : null,
-                }));
-                const maxSpent = Math.max(...src.map((r) => r.spent || 0), 1);
-                src.sort((a, b) => {
-                  const va = a[daySort.key], vb = b[daySort.key];
-                  if (va === null || va === undefined) return 1;
-                  if (vb === null || vb === undefined) return -1;
-                  return daySort.dir === "desc" ? vb - va : va - vb;
-                });
-                const trend = (r) => {
-                  if (!isActive(r.name)) return { txt: "כבוי", color: C.dim };
-                  if ((r.quality || 0) > 0) return { txt: "🟢 מייצר איכות", color: C.teal };
-                  if ((r.spent || 0) > 300 && (r.gross || 0) <= 0) return { txt: "🔴 שורף בלי לידים", color: C.coral };
-                  if ((r.gross || 0) > 0) return { txt: "🟡 לידים בלי איכות", color: C.amber };
-                  return { txt: "—", color: C.dim };
-                };
-                return src.map((r) => {
-                  const t = trend(r);
-                  const on = isActive(r.name);
-                  return (
-                    <tr key={`${r.type}-${r.name}`} style={{ opacity: on ? 1 : 0.45 }}>
-                      <td style={{ fontWeight: 700 }}>
-                        {r.name}
-                        <span className="tag" style={{ color: r.type === "חיפוש" ? C.violet : C.blue }}>{r.type}</span>
-                      </td>
-                      <td>
-                        <div className="util-cell">
-                          <div className="util-track"><div className="util-fill" style={{ width: `${((r.spent || 0) / maxSpent) * 100}%`, background: C.amber }} /></div>
-                          <span style={{ minWidth: 60, fontWeight: 700 }}>{nis(r.spent)}</span>
-                        </div>
-                      </td>
-                      <td>{num(r.gross)}</td>
-                      <td>{nis(r.cplDay)}</td>
-                      <td style={{ fontWeight: 700, color: (r.quality || 0) > 0 ? C.teal : undefined }}>{num(r.quality)}</td>
-                      <td>{nis(r.cpqlDay)}</td>
-                      <td style={{ color: t.color, fontSize: 12.5, fontWeight: 700 }}>{t.txt}</td>
-                    </tr>
-                  );
-                });
-              })()}
-            </tbody>
-          </table>
-        </div>
+            );
+          });
+          const tools = base.filter((r) => r.type === "כלי");
+          const search = base.filter((r) => r.type === "חיפוש");
+          const maxTools = Math.max(...tools.map((r) => r.spent || 0), 1);
+          const maxSearch = Math.max(...search.map((r) => r.spent || 0), 1);
+          return (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>כלי / קמפיין</th>
+                    <Th k="spent" sort={daySort} setSort={setDaySort}>מומש ביממה</Th>
+                    <Th k="gross" sort={daySort} setSort={setDaySort}>לידים ביממה</Th>
+                    <Th k="cplDay" sort={daySort} setSort={setDaySort}>עלות לליד יומית</Th>
+                    <Th k="quality" sort={daySort} setSort={setDaySort}>איכותיים ביממה</Th>
+                    <Th k="cpqlDay" sort={daySort} setSort={setDaySort}>עלות לאיכותי יומית</Th>
+                    <th>מגמה</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="group-row"><td colSpan={7} style={{ color: C.blue }}>🏗️ {view.isHarvard ? "כלי הארווארד" : "כלים · רמת מאקרו"}</td></tr>
+                  {tools.length ? rowsFor(tools, maxTools)
+                    : <tr><td colSpan={7} style={{ color: C.dim }}>אין תנועות ברמת הכלים ביממה האחרונה</td></tr>}
+                  {!view.isHarvard && (
+                    <>
+                      <tr className="group-row"><td colSpan={7} style={{ color: C.violet }}>🔍 דריל־דאון · קמפייני חיפוש</td></tr>
+                      {search.length ? rowsFor(search, maxSearch)
+                        : <tr><td colSpan={7} style={{ color: C.dim }}>אין תנועות בקמפייני החיפוש ביממה האחרונה</td></tr>}
+                    </>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
         {dayRows && (
           <div style={{ color: C.dim, fontSize: 12, marginTop: 10 }}>
             "יממה" = הפרש מאז הטעינה הקודמת. אם טוענים פעם ביום — זו בדיוק יממה. שורות כבויות מוצגות אך לא נכללות בהתראות.
@@ -1599,7 +1708,12 @@ export default function App() {
                 <span className="cal-year">{calYear}</span>
                 <button className="btn ghost" onClick={() => setCalYear((y) => y + 1)}>{calYear + 1} ◀</button>
               </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button className="btn ghost" onClick={exportArchive} title="הורדת כל הארכיון כקובץ — לסנכרון לדפדפן/מחשב אחר">⬇️ גיבוי</button>
+                <label className="btn ghost file-btn" title="ייבוא קובץ גיבוי שהורד בדפדפן אחר">
+                  ⬆️ ייבוא
+                  <input type="file" accept=".json,application/json" onChange={importArchive} />
+                </label>
                 <button className="btn ghost" onClick={async () => {
                   const y = new Date(); y.setDate(y.getDate() - 1);
                   const iso = viewingDay || isoDay(y);
@@ -1613,6 +1727,7 @@ export default function App() {
             <div className="cal-legend">
               <span><span className="cal-dot has" /> יש דוח שמור — לחיצה פותחת אותו</span>
               <span><span className="cal-dot" /> אין דוח — לחיצה מאפשרת להזין דוח לאותו יום</span>
+              <span>💾 הארכיון נשמר מקומית בדפדפן — לסנכרון לדפדפן אחר: גיבוי כאן ← ייבוא שם</span>
             </div>
             <div className="cal-months">
               {Array.from({ length: 12 }, (_, mi) => {
