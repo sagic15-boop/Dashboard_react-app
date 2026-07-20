@@ -827,6 +827,21 @@ export default function App() {
     setDayIndex(keys.map((k) => k.slice(DAY_PREFIX.length)).sort());
   }, []);
 
+  /* הדוח הקודם = הדוח השמור בארכיון ליום הקרוב ביותר שלפני תאריך הארכוב הנוכחי.
+     כך הדלתא היומית תמיד נכונה — לא משנה כמה פעמים רועננו הנתונים באותו יום */
+  const findPrevSnapFor = useCallback(async (iso) => {
+    const keys = await store.list(DAY_PREFIX);
+    const days = keys.map((k) => k.slice(DAY_PREFIX.length)).filter((d) => d < iso).sort();
+    if (!days.length) return null;
+    return await store.get(dayKey(days[days.length - 1]));
+  }, []);
+
+  const archiveDateOf = (rec) => {
+    if (rec && rec.archivedFor) return rec.archivedFor;
+    if (rec && rec.savedAt) { const d = new Date(rec.savedAt); d.setDate(d.getDate() - 1); return isoDay(d); }
+    return yesterdayIso();
+  };
+
   /* תאריך הארכוב — ברירת מחדל: יום לפני תאריך ההעלאה. ניתן לשינוי ידני למקרים חריגים */
   const yesterdayIso = () => { const y = new Date(); y.setDate(y.getDate() - 1); return isoDay(y); };
   const [archiveDate, setArchiveDate] = useState(yesterdayIso());
@@ -881,8 +896,9 @@ export default function App() {
         setData(latest.data);
         setUpdatedAt(new Date(latest.savedAt));
         setStatus({ kind: "ok", msg: `נטענה תמונת המצב האחרונה שנשמרה (${heDate(latest.savedAt)})` });
-      }
-      if (prev) setPrevSnap(prev);
+        const archPrev = await findPrevSnapFor(archiveDateOf(latest));
+        setPrevSnap(archPrev || prev || null);
+      } else if (prev) setPrevSnap(prev);
     })();
     refreshDayIndex();
   }, [refreshDayIndex]);
@@ -901,28 +917,24 @@ export default function App() {
       }
       const yIso = /^\d{4}-\d{2}-\d{2}$/.test(archiveDate) ? archiveDate : yesterdayIso();
       const latest = await store.get("peres:latest");
-      /* "הדוח הקודם" מתעדכן רק כשעוברים ליום חדש — טעינות חוזרות באותו יום לא דורסות אותו,
-         כך הדלתא היומית תמיד משקפת יממה אמיתית ולא "מאז הרענון האחרון" */
-      if (latest && latest.archivedFor !== yIso) {
-        await store.set("peres:previous", latest);
-        setPrevSnap(latest);
-      } else if (!latest) {
-        setPrevSnap(null);
-      }
       await store.set("peres:latest", { savedAt: now, archivedFor: yIso, data: parsed });
       /* ארכוב אוטומטי: דוח שנטען היום משקף את אתמול — נשמר לתאריך יום קודם (או לתאריך שנבחר ידנית) */
       await store.set(dayKey(yIso), { savedAt: now, reportDay: yIso, data: parsed });
       await refreshDayIndex();
+      /* הדלתא נגזרת מהארכיון: מול הדוח של היום השמור הקרוב שלפני */
+      const prev = await findPrevSnapFor(yIso);
+      setPrevSnap(prev);
+      if (prev) await store.set("peres:previous", prev);
       setData(parsed);
       setViewingDay(null);
       setUpdatedAt(new Date(now));
-        setStatus({ kind: "ok", msg: (latest ? (latest.archivedFor === yIso ? "הנתונים רועננו — הדלתות עדיין מול הדוח של אתמול" : "הנתונים נטענו — הדלתות מחושבות מול הדוח הקודם") : "הנתונים נטענו ונשמרו. בטעינה הבאה יוצגו דלתות מול הדוח הזה") + ` · אורכב לתאריך ${yIso.split("-").reverse().join(".")}` });
+        setStatus({ kind: "ok", msg: (prev ? `הנתונים נטענו — הדלתות מול הדוח של ${(prev.reportDay || "").split("-").reverse().join(".") || "היום הקודם"}` : "הנתונים נטענו ונשמרו. הדלתות יופיעו כשיהיה יום קודם בארכיון") + ` · אורכב לתאריך ${yIso.split("-").reverse().join(".")}` });
       setShowConnect(false);
     } else {
       setStatus({ kind: "err", msg: "לא זוהה מבנה הדוח בקובץ. ודאו שהלשונית הנכונה מקושרת (עם טבלאות פלטפורמה/קמפיין)." });
       if (targetDay) setCalPaste({ date: targetDay, error: true });
     }
-  }, [refreshDayIndex, archiveDate]);
+  }, [refreshDayIndex, archiveDate, findPrevSnapFor]);
 
   /* פתיחת דוח היסטורי מהארכיון — הדלתא מחושבת מול היום השמור הקרוב שלפניו */
   const openDay = useCallback(async (iso) => {
@@ -941,13 +953,13 @@ export default function App() {
 
   const backToToday = useCallback(async () => {
     const latest = await store.get("peres:latest");
-    const prev = await store.get("peres:previous");
+    const prev = latest ? await findPrevSnapFor(archiveDateOf(latest)) : await store.get("peres:previous");
     setData(latest && latest.data ? latest.data : DEMO);
     setPrevSnap(prev || null);
     setViewingDay(null);
     setUpdatedAt(latest ? new Date(latest.savedAt) : null);
     setStatus({ kind: "ok", msg: "חזרת לדוח הנוכחי" });
-  }, []);
+  }, [findPrevSnapFor]);
 
   /* העלאת קובץ CSV / XLSX — עובר דרך אותו loadCsv, כולל ארכוב אוטומטי ליום קודם */
   const handleFile = useCallback((e, targetDay = null) => {
@@ -1834,6 +1846,7 @@ export default function App() {
       )}
 
       {/* ---------- ביצועי היממה האחרונה (דלתא) ---------- */}
+      {board !== "site" && (
       <div className="panel" style={{ marginBottom: 26, marginTop: drillOpen && !view.isHarvard && view.data.campaigns.length > 0 ? 0 : 26 }}>
         <h2>📅 ביצועי קמפיינים · היממה האחרונה{view.isHarvard ? " · הארווארד" : ""}</h2>
         <div className="hint">
@@ -1918,10 +1931,11 @@ export default function App() {
         })()}
         {dayRows && (
           <div style={{ color: C.dim, fontSize: 12, marginTop: 10 }}>
-            "יממה" = הפרש מאז הטעינה הקודמת. אם טוענים פעם ביום — זו בדיוק יממה. שורות כבויות מוצגות אך לא נכללות בהתראות.
+            "יממה" = הפרש בין הדוח הנוכחי לדוח של היום הקודם בארכיון. שורות כבויות מוצגות אך לא נכללות בהתראות.
           </div>
         )}
       </div>
+      )}
 
       </>)}
 
