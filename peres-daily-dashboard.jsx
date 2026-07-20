@@ -809,7 +809,7 @@ export default function App() {
   const [board, setBoard] = useState("main"); /* main = תארים · harvard = הארווארד · site = אתר */
   const [siteData, setSiteData] = useState(null);
   const [sitePrev, setSitePrev] = useState(null);
-  const [siteLink, setSiteLink] = useState("https://docs.google.com/spreadsheets/d/1HJ8LFliiXjbKJiSi8NAcg6tNiRYKGsjH8yN4QgVJgLo/edit?gid=1597690556#gid=1597690556");
+  const [siteLink, setSiteLink] = useState("https://docs.google.com/spreadsheets/d/1HJ8LFliiXjbKJiSi8NAcg6tNiRYKGsjH8yN4QgVJgLo/edit?usp=sharing");
   const [siteUpdatedAt, setSiteUpdatedAt] = useState(null);
   const [autoSync, setAutoSync] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -1048,6 +1048,8 @@ export default function App() {
     const urls = toCsvUrls(theLink);
     if (!urls.length) { if (!silent) setStatus({ kind: "err", msg: "קישור חוברת האתר לא זוהה כקישור Google Sheets תקין" }); return; }
     if (!silent) setStatus({ kind: "load", msg: "טוען את חוברת האתר…" });
+
+    /* שלב א': משיכת CSV לפי ה-gid שבקישור (אם יש) */
     for (const url of urls) {
       try {
         const res = await fetchWithTimeout(url, 15000);
@@ -1058,11 +1060,41 @@ export default function App() {
         if (ok) {
           await store.set("peres:site:link", theLink);
           if (!silent) setStatus({ kind: "ok", msg: "חוברת האתר נטענה ונשמרה" });
+          return;
         }
-        return;
+        break; /* ה-CSV נמשך אך אינו במבנה דוח — כנראה לשונית לא נכונה; עוברים לאיתור אוטומטי */
       } catch { /* מסלול הבא */ }
     }
-    if (!silent) setStatus({ kind: "err", msg: "לא הצלחתי למשוך את חוברת האתר — ודאו שהגיליון משותף לצפייה או מפורסם כ-CSV" });
+
+    /* שלב ב': מושכים את כל החוברת כ-XLSX ומאתרים אוטומטית את לשונית הדוח */
+    const m = String(theLink).match(/\/d\/([\w-]+)/);
+    if (m && !theLink.includes("/d/e/")) {
+      try {
+        const res = await fetchWithTimeout(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`, 25000);
+        if (res.ok) {
+          const buf = await res.arrayBuffer();
+          const wb = XLSX.read(buf, { type: "array" });
+          let chosen = null;
+          for (const name of wb.SheetNames) {
+            const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
+            if (csv.includes("פלטפורמה") && csv.includes("לידים ברוטו")) {
+              chosen = csv;
+              if (name.includes("אתר") || csv.includes("- אתר")) break; /* עדיפות ללשונית האתר */
+            }
+          }
+          if (chosen) {
+            const ok = await loadSiteCsv(chosen);
+            if (ok) {
+              await store.set("peres:site:link", theLink);
+              if (!silent) setStatus({ kind: "ok", msg: "חוברת האתר נטענה — הלשונית אותרה אוטומטית בתוך החוברת" });
+              return;
+            }
+          }
+        }
+      } catch { /* ממשיכים לשגיאה */ }
+    }
+
+    if (!silent) setStatus({ kind: "err", msg: "לא הצלחתי למשוך את חוברת האתר. שימו לב: זו חוברת נפרדת עם הרשאות משלה — השיתוף של חוברת התארים לא חל עליה. בחוברת האתר: שיתוף ← גישה כללית ← כל מי שיש לו את הקישור ← צפייה, ואז נסו שוב. (לחלופין: קובץ ← שיתוף ← פרסום באינטרנט ← בחרו את לשונית האתר + CSV, והדביקו את הקישור שנוצר בשדה חוברת האתר.)" });
   }, [loadSiteCsv]);
 
   const fetchSiteRef = React.useRef(null);
@@ -1481,7 +1513,7 @@ export default function App() {
         <div className="panel" style={{ marginBottom: 26 }}>
           <h2>🌐 חוברת האתר</h2>
           <div className="hint" style={{ marginBottom: 10 }}>
-            טרם נטענו נתוני האתר. הזינו את קישור החוברת בחלון "חיבור הגיליון" (שדה חוברת האתר) — המשיכה תתבצע אוטומטית בכל פתיחה ומדי יום ב־10:00, בדיוק כמו בתארים.
+            טרם נטענו נתוני האתר. שימו לב: זו חוברת Google Sheets נפרדת — צריך לפתוח אותה לצפייה (שיתוף ← כל מי שיש לו קישור ← צפייה) או לפרסם כ-CSV, בנפרד מחוברת התארים. אחרי זה המשיכה תתבצע אוטומטית בכל פתיחה ומדי יום ב־10:00. חשוב: העתיקו את הקישור מתוך חוברת האתר כשהלשונית הרלוונטית פתוחה, כדי שה-gid יצביע על הלשונית הנכונה.
           </div>
           <button className="btn" onClick={() => fetchSite(siteLink)}>משיכת נתוני האתר עכשיו</button>
         </div>
@@ -1544,6 +1576,7 @@ export default function App() {
         </div>
       )}
 
+      {(board !== "site" || siteData) && (<>
       {/* ---------- KPI ---------- */}
       <div className="grid-kpi">
         {!view.noBudget && (
@@ -1889,6 +1922,8 @@ export default function App() {
           </div>
         )}
       </div>
+
+      </>)}
 
       {/* ---------- ארכיון · לוח שנה ---------- */}
       <div className="panel cal-cta" style={{ marginBottom: 26 }} onClick={() => { refreshDayIndex(); setCalOpen(true); }}>
