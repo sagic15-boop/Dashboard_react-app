@@ -12,6 +12,7 @@ import {
 
 const DEMO = {
   meta: { budget: 677000, spent: 263033, pace: 41.9, utilPct: 38.9, month: "חודש יולי" },
+  totalsRow: { budget: 637000, spent: 198993 },
   harvard: {
     platforms: [
       { name: "Linkedin", budget: 40000, spent: 23543.5, gross: 195, cpl: 120.7, quality: 9, cpql: 2615.9, qPct: 4.6, inProc: 70, inProcPct: 35.9 },
@@ -153,7 +154,7 @@ const findCol = (cols, ...keys) =>
 
 function parseReport(csvText) {
   const rows = Papa.parse(csvText).data;
-  const out = { meta: {}, summary: null, platforms: [], campaigns: [], harvard: null };
+  const out = { meta: {}, summary: null, platforms: [], campaigns: [], harvard: null, totalsRow: null };
 
   /* --- בלוק מטא עליון: תקציב, קצב קלנדרי, מימוש, חודש --- */
   for (let i = 0; i < Math.min(rows.length, 16); i++) {
@@ -176,17 +177,20 @@ function parseReport(csvText) {
     const ci = {
       gross: findCol(cols, "לידים ברוטו"),
       quality: findCol(cols, "לידים איכותיים"),
-      qualityPct: findCol(cols, "% לידים איכותיים", "%לידים"),
+      qualityPct: findCol(cols, "% לידים איכותיים", "%לידים", "אחוז איכות"),
       cpl: findCol(cols, "עלות לליד ברוטו", "עלות ליד ברוטו"),
       cpql: findCol(cols, "עלות לליד איכותי", "עלות ליד איכותי"),
       inProcess: findCol(cols, "לידים בתהליך"),
+      invalid: findCol(cols, "לא תקינים"),
     };
     const pick = (label) => rows.slice(sumHdr + 1, sumHdr + 6).find((r) => r.some((c) => String(c).trim() === label));
     const a = pick("בפועל"), t = pick("יעד");
     const read = (r) =>
       r && {
         gross: toNum(r[ci.gross]), quality: toNum(r[ci.quality]), qualityPct: toPct(r[ci.qualityPct]),
-        cpl: toNum(r[ci.cpl]), cpql: toNum(r[ci.cpql]), inProcess: toNum(r[ci.inProcess]),
+        cpl: ci.cpl !== -1 ? toNum(r[ci.cpl]) : null, cpql: ci.cpql !== -1 ? toNum(r[ci.cpql]) : null,
+        inProcess: toNum(r[ci.inProcess]),
+        invalid: ci.invalid !== -1 ? toNum(r[ci.invalid]) : null,
       };
     if (a && t) out.summary = { actual: read(a), target: read(t) };
   }
@@ -214,7 +218,11 @@ function parseReport(csvText) {
       const r = rows[i];
       const name = String(r[ci.name] || "").trim();
       if (!name) continue;
-      if (/^total$|סה"כ|סהכ/i.test(name)) break;
+      if (/^total$|סה"כ|סהכ/i.test(name)) {
+        /* שורת ה-Total של הטבלה — מקור האמת ליעד התקציב והמימוש של חוברת התארים */
+        out.totalsRow = { budget: toNum(r[ci.budget]), spent: toNum(r[ci.spent]) };
+        break;
+      }
       const row = {
         name, budget: toNum(r[ci.budget]) ?? 0, spent: toNum(r[ci.spent]) ?? 0,
         gross: toNum(r[ci.gross]), cpl: toNum(r[ci.cpl]),
@@ -308,7 +316,7 @@ function parseReport(csvText) {
   }
 
   const ok = out.summary && out.platforms.length > 0;
-  return ok ? { meta: out.meta, summary: out.summary, platforms: out.platforms, campaigns: out.campaigns, harvard: out.harvard } : null;
+  return ok ? { meta: out.meta, summary: out.summary, platforms: out.platforms, campaigns: out.campaigns, harvard: out.harvard, totalsRow: out.totalsRow || null } : null;
 }
 
 export { parseReport };
@@ -417,7 +425,50 @@ function buildInsights(data, delta, isActive = () => true) {
   const out = [];
   const P = data.platforms.filter((p) => (p.spent || 0) > 1000 && isActive(p.name));
   const withQ = P.filter((p) => (p.quality || 0) >= 2 && p.cpql);
-  if (withQ.length) {
+  const anySpend = data.platforms.some((p) => (p.spent || 0) > 0);
+  /* מקורות ללא תקציב (חוברת האתר) — תובנות סביב לידים ואיכות בלבד */
+  if (!anySpend && data.platforms.length >= 1) {
+    const top = [...data.platforms].filter((p) => p.gross).sort((a, b) => b.gross - a.gross)[0];
+    const totGross = data.platforms.reduce((a, b) => a + (b.gross || 0), 0);
+    if (top && totGross)
+      out.push({ icon: "🌐", tone: "info", text: `${top.name} הוא מקור הלידים המרכזי — ${num(top.gross)} לידים (${Math.round((top.gross / totGross) * 100)}% מהסך).` });
+    const s0 = data.summary;
+    if (s0.actual.invalid !== null && s0.actual.invalid !== undefined && s0.actual.gross)
+      out.push({
+        icon: "🧹", tone: s0.actual.invalid / s0.actual.gross > 0.4 ? "bad" : "warn",
+        text: `${num(s0.actual.invalid)} לידים לא תקינים מתוך ${num(s0.actual.gross)} ברוטו (${Math.round((s0.actual.invalid / s0.actual.gross) * 100)}%) — ${s0.actual.invalid / s0.actual.gross > 0.4 ? "שיעור גבוה; שווה לבדוק ולידציה בטפסים וסינון ספאם" : "שווה מעקב על איכות הטפסים"}.`,
+      });
+    const bestQ = [...data.platforms].filter((p) => (p.quality || 0) >= 2).sort((a, b) => (b.qPct || 0) - (a.qPct || 0))[0];
+    if (bestQ) out.push({ icon: "⭐", tone: "good", text: `${bestQ.name} מוביל באחוז איכות — ${pct(bestQ.qPct, 1)} (${num(bestQ.quality)} איכותיים).` });
+    if (delta && delta.summary && delta.summary.gross)
+      out.push({ icon: "📈", tone: "info", text: `ביממה האחרונה נוספו ${num(delta.summary.gross)} לידים מהאתר${delta.summary.quality ? `, מתוכם ${num(delta.summary.quality)} איכותיים` : ""}.` });
+  } else if (data.platforms.length === 1) {
+    const p = data.platforms[0];
+    const util = p.budget ? ((p.spent || 0) / p.budget) * 100 : null;
+    const pace = data.meta && data.meta.pace != null ? data.meta.pace : null;
+    if (util !== null && pace !== null) {
+      const gap = Math.round(util - pace);
+      out.push({
+        icon: gap >= 0 ? "⏱️" : "🐢", tone: gap >= -5 ? "good" : "warn",
+        text: gap >= 0
+          ? `${p.name} מנצל ${Math.round(util)}% מהתקציב, ${gap}+ נק' מעל הקצב הקלנדרי (${Math.round(pace)}%) — קצב הוצאה בריא.`
+          : `${p.name} מנצל ${Math.round(util)}% מהתקציב מול קצב קלנדרי של ${Math.round(pace)}% — פיגור של ${Math.abs(gap)} נק'. אם היעד הוא מיצוי החודש, שקלו הגברת בידים/קהלים.`,
+      });
+    }
+    if (delta && delta.platforms[p.name]) {
+      const d = delta.platforms[p.name];
+      const dayCpql = (d.quality || 0) > 0 ? d.spent / d.quality : null;
+      if (dayCpql !== null && p.cpql)
+        out.push({
+          icon: dayCpql <= p.cpql ? "📈" : "📉", tone: dayCpql <= p.cpql ? "good" : "warn",
+          text: `עלות לליד איכותי ביממה האחרונה: ${nis(dayCpql)} — ${dayCpql <= p.cpql ? "טובה מהממוצע המצטבר" : "יקרה מהממוצע המצטבר"} (${nis(p.cpql)}).`,
+        });
+      else if ((d.spent || 0) > 500 && (d.quality || 0) === 0)
+        out.push({ icon: "🧐", tone: "warn", text: `ביממה האחרונה מומשו ${nis(d.spent)} בלי ליד איכותי חדש — ${num(d.gross ?? 0)} לידים ברוטו נכנסו וממתינים לטיוב.` });
+    }
+    if (p.inProc)
+      out.push({ icon: "⏳", tone: "info", text: `${num(p.inProc)} לידים בתהליך${p.inProcPct ? ` (${pct(p.inProcPct)} מהברוטו)` : ""} — שם טמון הפוטנציאל המיידי לשיפור אחוז האיכות.` });
+  } else if (withQ.length) {
     const best = [...withQ].sort((a, b) => a.cpql - b.cpql)[0];
     out.push({ icon: "🏆", tone: "good", text: `${best.name} הוא הכלי היעיל ביותר לליד איכותי — ${nis(best.cpql)} בלבד (${pct(best.qPct, 1)} איכות). שווה לבחון הסטת תקציב לכיוונו.` });
     const worst = [...withQ].sort((a, b) => b.cpql - a.cpql)[0];
@@ -589,9 +640,10 @@ function buildSlides(data, totals, delta, insights, isActive = () => true, label
     color: C.coral,
   });
 
+  const hasBudget = (totals.budget || 0) > 0;
   const slides = [
-    /* 1 — נתונים כלליים: תקציב, קצב קלנדרי, ניצול */
-    {
+    /* 1 — נתונים כלליים: תקציב/לידים, קצב קלנדרי */
+    hasBudget ? {
       kicker: now.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" }) + ` · ${label} · תמונת מצב`,
       big: `${util}% ניצול`,
       color: util >= pace ? C.teal : C.amber,
@@ -607,6 +659,18 @@ function buildSlides(data, totals, delta, insights, isActive = () => true, label
       ],
       foot: delta ? `השוואה מול הדוח מ־${heDate(delta.date)}` : noDeltaNote,
       bg: g1,
+    } : {
+      kicker: now.toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" }) + ` · ${label} · תמונת מצב`,
+      big: `${num(s.actual.gross)} לידים`,
+      color: C.blue,
+      rows: [
+        ...(s.target.gross ? [{ label: "עמידה ביעד ברוטו", value: `${Math.round((s.actual.gross / s.target.gross) * 100)}% מתוך ${num(s.target.gross)}` }] : []),
+        ...(s.target.quality ? [{ label: "עמידה ביעד איכותיים", value: `${Math.round((s.actual.quality / s.target.quality) * 100)}% מתוך ${num(s.target.quality)}`, color: C.teal }] : []),
+        { label: "קצב קלנדרי של החודש", value: `${pace}% (יום ${now.getDate()} מתוך ${daysInMonth})` },
+        ...(delta && delta.summary.gross ? [{ label: "לידים ביממה האחרונה", value: `+${num(delta.summary.gross)}`, color: C.blue }] : []),
+      ],
+      foot: delta ? `השוואה מול הדוח מ־${heDate(delta.date)}` : noDeltaNote,
+      bg: g1,
     },
     /* 2 — ברוטו */
     {
@@ -615,7 +679,7 @@ function buildSlides(data, totals, delta, insights, isActive = () => true, label
       color: C.blue,
       rows: [
         ...(s.target.gross ? [{ label: "עמידה ביעד", value: `${Math.round((s.actual.gross / s.target.gross) * 100)}% מתוך ${num(s.target.gross)}` }] : []),
-        { label: "עלות לליד ברוטו", value: s.target.cpl ? `${nis(s.actual.cpl)} (יעד: ${nis(s.target.cpl)})` : nis(s.actual.cpl), color: s.target.cpl ? (s.actual.cpl <= s.target.cpl ? C.teal : C.coral) : C.text },
+        ...(s.actual.cpl !== null && s.actual.cpl !== undefined ? [{ label: "עלות לליד ברוטו", value: s.target.cpl ? `${nis(s.actual.cpl)} (יעד: ${nis(s.target.cpl)})` : nis(s.actual.cpl), color: s.target.cpl ? (s.actual.cpl <= s.target.cpl ? C.teal : C.coral) : C.text }] : []),
         ...(delta && delta.summary.gross ? [{ label: "לידים ביממה האחרונה", value: `+${num(delta.summary.gross)}`, color: C.teal }] : []),
         topGross
           ? { label: "מוביל היממה", value: `${topGross.name} · ${num(topGross.gross)} לידים (${nis(dayCPL(topGross))} לליד)`, color: C.amber }
@@ -634,7 +698,7 @@ function buildSlides(data, totals, delta, insights, isActive = () => true, label
       rows: [
         ...(s.target.quality ? [{ label: "עמידה ביעד", value: `${Math.round((s.actual.quality / s.target.quality) * 100)}% מתוך ${num(s.target.quality)}` }] : []),
         { label: "אחוז איכות", value: s.target.qualityPct ? `${pct(s.actual.qualityPct)} (יעד: ${pct(s.target.qualityPct)})` : pct(s.actual.qualityPct, 1), color: s.target.qualityPct ? (s.actual.qualityPct >= s.target.qualityPct ? C.teal : C.coral) : C.text },
-        { label: "עלות לליד איכותי", value: s.target.cpql ? `${nis(s.actual.cpql)} (יעד: ${nis(s.target.cpql)})` : nis(s.actual.cpql), color: s.target.cpql ? (s.actual.cpql <= s.target.cpql ? C.teal : C.coral) : C.text },
+        ...(s.actual.cpql !== null && s.actual.cpql !== undefined ? [{ label: "עלות לליד איכותי", value: s.target.cpql ? `${nis(s.actual.cpql)} (יעד: ${nis(s.target.cpql)})` : nis(s.actual.cpql), color: s.target.cpql ? (s.actual.cpql <= s.target.cpql ? C.teal : C.coral) : C.text }] : []),
         ...(delta && delta.summary.quality ? [{ label: "איכותיים ביממה האחרונה", value: `+${num(delta.summary.quality)}`, color: C.teal }] : []),
         topQuality
           ? { label: "מוביל היממה", value: `${topQuality.name} · ${num(topQuality.quality)} איכותיים (${nis(dayCPQL(topQuality))} לליד)`, color: C.amber }
@@ -646,6 +710,8 @@ function buildSlides(data, totals, delta, insights, isActive = () => true, label
       foot: delta ? null : noDeltaNote,
       bg: g1,
     },
+  ];
+  const weakSlides = hasBudget ? [
     /* 4 — לשים לב · ברוטו */
     {
       kicker: "🚨 לשים לב · ברוטו" + (delta ? " · היממה האחרונה" : ""),
@@ -668,7 +734,8 @@ function buildSlides(data, totals, delta, insights, isActive = () => true, label
       foot: "חריג = תקציב שמומש בלי ליד איכותי אחד",
       bg: g1,
     },
-  ];
+  ] : [];
+  slides.push(...weakSlides);
   if (insights.length) slides.push({
     kicker: "💡 תובנת היום",
     big: insights[0].icon,
@@ -739,7 +806,11 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = useState(null);
   const [story, setStory] = useState(false);
   const [daySort, setDaySort] = useState({ key: "spent", dir: "desc" });
-  const [board, setBoard] = useState("main"); /* main = תארים · harvard = הארווארד */
+  const [board, setBoard] = useState("main"); /* main = תארים · harvard = הארווארד · site = אתר */
+  const [siteData, setSiteData] = useState(null);
+  const [sitePrev, setSitePrev] = useState(null);
+  const [siteLink, setSiteLink] = useState("https://docs.google.com/spreadsheets/d/1HJ8LFliiXjbKJiSi8NAcg6tNiRYKGsjH8yN4QgVJgLo/edit?gid=1597690556#gid=1597690556");
+  const [siteUpdatedAt, setSiteUpdatedAt] = useState(null);
   const [autoSync, setAutoSync] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pendingAutoFetch, setPendingAutoFetch] = useState(null);
@@ -760,8 +831,6 @@ export default function App() {
   const yesterdayIso = () => { const y = new Date(); y.setDate(y.getDate() - 1); return isoDay(y); };
   const [archiveDate, setArchiveDate] = useState(yesterdayIso());
   useEffect(() => { if (showConnect) setArchiveDate(yesterdayIso()); }, [showConnect]);
-  const [aiInsights, setAiInsights] = useState(null);
-  const [aiLoading, setAiLoading] = useState(false);
   const [activeMap, setActiveMap] = useState({});
   const [shareModal, setShareModal] = useState(null);
 
@@ -795,6 +864,12 @@ export default function App() {
       } catch {}
       const savedLink = await store.get("peres:link");
       if (savedLink) setLink(savedLink);
+      const savedSiteLink = await store.get("peres:site:link");
+      if (savedSiteLink) setSiteLink(savedSiteLink);
+      const siteLatest = await store.get("peres:site:latest");
+      if (siteLatest && siteLatest.data) { setSiteData(siteLatest.data); setSiteUpdatedAt(new Date(siteLatest.savedAt)); }
+      const siteP = await store.get("peres:site:previous");
+      if (siteP) setSitePrev(siteP);
       const savedAuto = await store.get("peres:autosync");
       if (savedAuto) setAutoSync(true);
       if (savedAuto && savedLink) setPendingAutoFetch(savedLink);
@@ -824,18 +899,24 @@ export default function App() {
         setStatus({ kind: "ok", msg: `הדוח נשמר בארכיון לתאריך ${heDayLabel(targetDay)}` });
         return;
       }
-      const latest = await store.get("peres:latest");
-      if (latest) { await store.set("peres:previous", latest); setPrevSnap(latest); }
-      await store.set("peres:latest", { savedAt: now, data: parsed });
-      /* ארכוב אוטומטי: דוח שנטען היום משקף את אתמול — נשמר לתאריך יום קודם (או לתאריך שנבחר ידנית) */
       const yIso = /^\d{4}-\d{2}-\d{2}$/.test(archiveDate) ? archiveDate : yesterdayIso();
+      const latest = await store.get("peres:latest");
+      /* "הדוח הקודם" מתעדכן רק כשעוברים ליום חדש — טעינות חוזרות באותו יום לא דורסות אותו,
+         כך הדלתא היומית תמיד משקפת יממה אמיתית ולא "מאז הרענון האחרון" */
+      if (latest && latest.archivedFor !== yIso) {
+        await store.set("peres:previous", latest);
+        setPrevSnap(latest);
+      } else if (!latest) {
+        setPrevSnap(null);
+      }
+      await store.set("peres:latest", { savedAt: now, archivedFor: yIso, data: parsed });
+      /* ארכוב אוטומטי: דוח שנטען היום משקף את אתמול — נשמר לתאריך יום קודם (או לתאריך שנבחר ידנית) */
       await store.set(dayKey(yIso), { savedAt: now, reportDay: yIso, data: parsed });
       await refreshDayIndex();
       setData(parsed);
       setViewingDay(null);
       setUpdatedAt(new Date(now));
-      setAiInsights(null);
-      setStatus({ kind: "ok", msg: (latest ? "הנתונים נטענו — הדלתות מחושבות מול הדוח הקודם" : "הנתונים נטענו ונשמרו. בטעינה הבאה יוצגו דלתות מול הדוח הזה") + ` · אורכב לתאריך ${yIso.split("-").reverse().join(".")}` });
+        setStatus({ kind: "ok", msg: (latest ? (latest.archivedFor === yIso ? "הנתונים רועננו — הדלתות עדיין מול הדוח של אתמול" : "הנתונים נטענו — הדלתות מחושבות מול הדוח הקודם") : "הנתונים נטענו ונשמרו. בטעינה הבאה יוצגו דלתות מול הדוח הזה") + ` · אורכב לתאריך ${yIso.split("-").reverse().join(".")}` });
       setShowConnect(false);
     } else {
       setStatus({ kind: "err", msg: "לא זוהה מבנה הדוח בקובץ. ודאו שהלשונית הנכונה מקושרת (עם טבלאות פלטפורמה/קמפיין)." });
@@ -854,7 +935,6 @@ export default function App() {
     setPrevSnap(prevDaySnap && prevDaySnap.data ? prevDaySnap : null);
     setViewingDay(iso);
     setUpdatedAt(new Date(snap.savedAt));
-    setAiInsights(null);
     setCalOpen(false);
     setStatus({ kind: "ok", msg: `צפייה בדוח מהארכיון · ${heDayLabel(iso)}${prevIso ? ` · דלתות מול ${prevIso.split("-").reverse().slice(0, 2).join(".")}` : ""}` });
   }, [dayIndex]);
@@ -866,7 +946,6 @@ export default function App() {
     setPrevSnap(prev || null);
     setViewingDay(null);
     setUpdatedAt(latest ? new Date(latest.savedAt) : null);
-    setAiInsights(null);
     setStatus({ kind: "ok", msg: "חזרת לדוח הנוכחי" });
   }, []);
 
@@ -943,6 +1022,52 @@ export default function App() {
     r.readAsText(f);
   }, [refreshDayIndex, backToToday]);
 
+  /* ---------- חוברת האתר: מקור נתונים נפרד עם אותה לוגיקת יממה ---------- */
+  const loadSiteCsv = useCallback(async (text) => {
+    const parsed = parseReport(text);
+    if (!parsed) {
+      setStatus({ kind: "err", msg: "לא זוהה מבנה דוח בחוברת האתר — ודאו שהלשונית המקושרת בנויה באותו מבנה (פלטפורמה / לידים ברוטו)" });
+      return false;
+    }
+    const now = new Date().toISOString();
+    const yIso = yesterdayIso();
+    const latest = await store.get("peres:site:latest");
+    if (latest && latest.archivedFor !== yIso) {
+      await store.set("peres:site:previous", latest);
+      setSitePrev(latest);
+    } else if (!latest) {
+      setSitePrev(null);
+    }
+    await store.set("peres:site:latest", { savedAt: now, archivedFor: yIso, data: parsed });
+    setSiteData(parsed);
+    setSiteUpdatedAt(new Date(now));
+    return true;
+  }, []);
+
+  const fetchSite = useCallback(async (theLink, silent = false) => {
+    const urls = toCsvUrls(theLink);
+    if (!urls.length) { if (!silent) setStatus({ kind: "err", msg: "קישור חוברת האתר לא זוהה כקישור Google Sheets תקין" }); return; }
+    if (!silent) setStatus({ kind: "load", msg: "טוען את חוברת האתר…" });
+    for (const url of urls) {
+      try {
+        const res = await fetchWithTimeout(url, 15000);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const text = await res.text();
+        if (/^\s*</.test(text)) throw new Error("not-csv");
+        const ok = await loadSiteCsv(text);
+        if (ok) {
+          await store.set("peres:site:link", theLink);
+          if (!silent) setStatus({ kind: "ok", msg: "חוברת האתר נטענה ונשמרה" });
+        }
+        return;
+      } catch { /* מסלול הבא */ }
+    }
+    if (!silent) setStatus({ kind: "err", msg: "לא הצלחתי למשוך את חוברת האתר — ודאו שהגיליון משותף לצפייה או מפורסם כ-CSV" });
+  }, [loadSiteCsv]);
+
+  const fetchSiteRef = React.useRef(null);
+  fetchSiteRef.current = fetchSite;
+
   /* סנכרון יומי מתוזמן: כל עוד הדשבורד פתוח, מדי דקה נבדק אם עברה השעה 10:00 והיום טרם סונכרן */
   useEffect(() => {
     if (!autoSync || !link) return;
@@ -954,11 +1079,12 @@ export default function App() {
       if (last === today) return;
       await store.set("peres:lastAutoSyncDay", today);
       if (fetchFromLinkRef.current) fetchFromLinkRef.current(link, true);
+      if (fetchSiteRef.current && siteLink) fetchSiteRef.current(siteLink, true);
     };
     tick();
     const id = setInterval(tick, 60000);
     return () => clearInterval(id);
-  }, [autoSync, link]);
+  }, [autoSync, link, siteLink]);
 
   /* סנכרון אוטומטי בפתיחה — רץ פעם אחת כשיש קישור שמור והאפשרות מופעלת */
   useEffect(() => {
@@ -966,8 +1092,9 @@ export default function App() {
       const l = pendingAutoFetch;
       setPendingAutoFetch(null);
       fetchFromLinkRef.current(l, true);
+      if (fetchSiteRef.current && siteLink) fetchSiteRef.current(siteLink, true);
     }
-  }, [pendingAutoFetch]);
+  }, [pendingAutoFetch, siteLink]);
 
   const fetchFromLink = useCallback(async (theLink, silent = false) => {
     const urls = toCsvUrls(theLink);
@@ -1007,8 +1134,14 @@ export default function App() {
 
   const fullDelta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
 
-  /* ה"חוברת" הפעילה: תארים (הדוח הראשי) או הארווארד — לכל אחת נתונים, דלתות, תובנות וסטורי משלה */
+  const siteDelta = useMemo(() => (siteData ? computeDelta(siteData, sitePrev) : null), [siteData, sitePrev]);
+
+  /* ה"חוברת" הפעילה: תארים / הארווארד / אתר — לכל אחת נתונים, דלתות, תובנות וסטורי משלה */
   const view = useMemo(() => {
+    const hasBudget = (d, tr) => (tr && tr.budget) || (d.platforms || []).some((x) => (x.budget || 0) > 0 || (x.spent || 0) > 0);
+    if (board === "site" && siteData) {
+      return { data: siteData, delta: siteDelta, label: "אתר", isHarvard: false, totalsRow: siteData.totalsRow || null, noBudget: !hasBudget(siteData, siteData.totalsRow) };
+    }
     if (board === "harvard" && data.harvard) {
       const H = data.harvard;
       const t = H.total || H.platforms.reduce(
@@ -1033,18 +1166,22 @@ export default function App() {
       const vDelta = fullDelta
         ? { date: fullDelta.date, summary: fullDelta.harvardSummary || {}, platforms: fullDelta.harvard || {}, campaigns: {} }
         : null;
-      return { data: vData, delta: vDelta, label: "הארווארד", isHarvard: true };
+      return { data: vData, delta: vDelta, label: "הארווארד", isHarvard: true, totalsRow: H.total, noBudget: false };
     }
-    return { data, delta: fullDelta, label: "תארים", isHarvard: false };
-  }, [data, fullDelta, board]);
+    return { data, delta: fullDelta, label: "תארים", isHarvard: false, totalsRow: data.totalsRow || null, noBudget: false };
+  }, [data, fullDelta, board, siteData, siteDelta]);
 
   const delta = view.delta;
   const s = view.data.summary;
 
   const totals = useMemo(() => {
     const p = view.data.platforms;
-    const budget = p.reduce((s, x) => s + (x.budget || 0), 0);
-    const spent = p.reduce((s, x) => s + (x.spent || 0), 0);
+    const sumBudget = p.reduce((s, x) => s + (x.budget || 0), 0);
+    const sumSpent = p.reduce((s, x) => s + (x.spent || 0), 0);
+    /* יעד התקציב נמשך משורת ה-Total של הטבלה בגיליון (מקור האמת); סכימת השורות היא גיבוי בלבד */
+    const tr = view.totalsRow;
+    const budget = tr && tr.budget ? tr.budget : sumBudget;
+    const spent = tr && tr.spent ? tr.spent : sumSpent;
     return { budget, spent, util: budget ? (spent / budget) * 100 : 0 };
   }, [view]);
 
@@ -1069,48 +1206,16 @@ export default function App() {
     return arr;
   }, [view, sort]);
 
-  const pieData = useMemo(
-    () => view.data.platforms.filter((p) => p.spent > 0).map((p) => ({ name: p.name, value: p.spent })),
-    [view]
-  );
+  const pieData = useMemo(() => {
+    if (view.noBudget) return view.data.platforms.filter((p) => (p.gross || 0) > 0).map((p) => ({ name: p.name, value: p.gross }));
+    return view.data.platforms.filter((p) => p.spent > 0).map((p) => ({ name: p.name, value: p.spent }));
+  }, [view]);
+  const pieTotal = useMemo(() => pieData.reduce((s, x) => s + x.value, 0), [pieData]);
   const barData = useMemo(
     () => view.data.platforms.filter((p) => p.budget > 0 || p.spent > 0).map((p) => ({ name: p.name, "תקציב": p.budget, "מומש": p.spent })),
     [view]
   );
 
-  const runAiInsights = useCallback(async () => {
-    setAiLoading(true);
-    try {
-      const payload = {
-        board: view.label,
-        summary: view.data.summary,
-        platforms: view.data.platforms.map((p) => ({ ...p, status: isActive(p.name) ? "active" : "paused_by_user" })),
-        searchCampaigns: view.data.campaigns.map((c) => ({ ...c, status: isActive(c.name) ? "active" : "paused_by_user" })),
-        deltaSincePreviousReport: view.delta,
-        note: "קמפיינים במצב paused_by_user כבויים כרגע — אל תמליץ עליהם המלצות אופטימיזציה שוטפות; מותר רק להמליץ להפעיל אותם מחדש אם הביצועים ההיסטוריים מצדיקים",
-      };
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: `אתה אנליסט PPC בכיר. לפניך נתוני דוח לידים של מוסד אקדמי (בש"ח). החזר אך ורק מערך JSON של 4-5 מחרוזות בעברית — תובנות חדות ואופרטיביות (מה לעשות מחר בבוקר), בלי הקדמות ובלי Markdown. נתונים: ${JSON.stringify(payload)}`,
-          }],
-        }),
-      });
-      const d = await res.json();
-      const text = (d.content || []).map((i) => i.text || "").join("");
-      const arr = JSON.parse(text.replace(/```json|```/g, "").trim());
-      if (Array.isArray(arr)) setAiInsights(arr);
-      else throw new Error();
-    } catch {
-      setAiInsights(["לא הצלחתי להפיק תובנות AI כרגע — נסו שוב בעוד רגע."]);
-    }
-    setAiLoading(false);
-  }, [view, isActive]);
 
 
   /* ---------- שיתוף ---------- */
@@ -1155,7 +1260,7 @@ export default function App() {
     const lines = [
       `📊 המרכז האקדמי פרס · ${view.label} · דשבורד יומי · ${d}`,
       ``,
-      `💰 תקציב: ${nis(totals.spent)} מתוך ${nis(totals.budget)} (${Math.round(totals.util)}%)`,
+      ...(totals.budget > 0 ? [`💰 תקציב: ${nis(totals.spent)} מתוך ${nis(totals.budget)} (${Math.round(totals.util)}%)`] : []),
       `📥 לידים ברוטו: ${num(s.actual.gross)}${vsT(s.actual.gross, s.target.gross)} · ${nis(s.actual.cpl)} לליד`,
       `⭐ איכותיים: ${num(s.actual.quality)}${vsT(s.actual.quality, s.target.quality)} · ${nis(s.actual.cpql)} לליד · ${pct(s.actual.qualityPct, 1)} איכות`,
       `⏳ בתהליך: ${num(s.actual.inProcess)} לידים`,
@@ -1168,7 +1273,9 @@ export default function App() {
     }
     const top3 = [...view.data.platforms].sort((a, b) => (b.spent || 0) - (a.spent || 0)).slice(0, 3);
     lines.push(``, `🏗️ הכלים המובילים במימוש:`);
-    top3.forEach((p) => lines.push(`   ${p.name}: ${nis(p.spent)} · ${num(p.gross)} לידים · ${num(p.quality)} איכותיים`));
+    top3.forEach((p) => lines.push(totals.budget > 0
+      ? `   ${p.name}: ${nis(p.spent)} · ${num(p.gross)} לידים · ${num(p.quality)} איכותיים`
+      : `   ${p.name}: ${num(p.gross)} לידים · ${num(p.quality)} איכותיים`));
     if (insights.length) lines.push(``, `💡 ${insights[0].text}`);
     shareOut(`דשבורד יומי · ${view.label} — המרכז האקדמי פרס`, lines.join("\n"));
   }, [view, totals, delta, insights, s, shareOut]);
@@ -1263,7 +1370,6 @@ export default function App() {
         .insight.bad { border-right-color:${C.coral}; }
         .insight.warn { border-right-color:${C.amber}; }
         .insight .ico { font-size:18px; line-height:1.3; }
-        .ai-box { margin-top:14px; border-top:1px dashed ${C.line}; padding-top:14px; }
         .story-overlay { position:fixed; inset:0; background:rgba(5,10,20,.85); backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center; z-index:100; }
         .story-card { position:relative; width:min(430px, 94vw); height:min(760px, 92vh); border-radius:22px; border:1px solid ${C.line}; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 30px 80px rgba(0,0,0,.6); }
         .story-progress { display:flex; gap:5px; padding:14px 16px 0; }
@@ -1331,9 +1437,11 @@ export default function App() {
       {/* ---------- כותרת ---------- */}
       <div className="head">
         <div>
-          <h1>המרכז האקדמי פרס · <span>{view.isHarvard ? "הארווארד" : "דשבורד יומי"}</span></h1>
+          <h1>המרכז האקדמי פרס · <span>{view.isHarvard ? "הארווארד" : board === "site" ? "אתר" : "דשבורד יומי"}</span></h1>
           <div className="sub">
-            {updatedAt ? `עודכן לאחרונה: ${heDate(updatedAt)}` : "מקור: דוח ריכוז נתונים — Google Sheets"}
+            {board === "site"
+              ? (siteUpdatedAt ? `חוברת האתר עודכנה: ${heDate(siteUpdatedAt)}` : "חוברת האתר — טרם נטענה")
+              : (updatedAt ? `עודכן לאחרונה: ${heDate(updatedAt)}` : "מקור: דוח ריכוז נתונים — Google Sheets")}
             {delta && ` · דלתות מול הדוח מ־${heDate(delta.date)}`}
           </div>
         </div>
@@ -1352,6 +1460,9 @@ export default function App() {
         <button className={`tab ${board === "harvard" ? "on" : ""}`} onClick={() => setBoard("harvard")}>
           🏛️ הארווארד{!data.harvard ? " (אין נתונים)" : ""}
         </button>
+        <button className={`tab ${board === "site" ? "on" : ""}`} onClick={() => setBoard("site")}>
+          🌐 אתר{!siteData ? " (טרם נטען)" : ""}
+        </button>
         {view.data.meta && view.data.meta.month && (
           <span className="tab-meta">{view.data.meta.month}{view.data.meta.reportDate ? ` · מועד דיווח: ${view.data.meta.reportDate}` : ""}</span>
         )}
@@ -1363,6 +1474,16 @@ export default function App() {
         <div className="hist-banner">
           <span>🕰️ אתה צופה בדוח מהארכיון — <b>{heDayLabel(viewingDay)}</b></span>
           <button className="btn" onClick={backToToday}>חזרה לדוח הנוכחי</button>
+        </div>
+      )}
+
+      {board === "site" && !siteData && (
+        <div className="panel" style={{ marginBottom: 26 }}>
+          <h2>🌐 חוברת האתר</h2>
+          <div className="hint" style={{ marginBottom: 10 }}>
+            טרם נטענו נתוני האתר. הזינו את קישור החוברת בחלון "חיבור הגיליון" (שדה חוברת האתר) — המשיכה תתבצע אוטומטית בכל פתיחה ומדי יום ב־10:00, בדיוק כמו בתארים.
+          </div>
+          <button className="btn" onClick={() => fetchSite(siteLink)}>משיכת נתוני האתר עכשיו</button>
         </div>
       )}
 
@@ -1390,13 +1511,18 @@ export default function App() {
               ברירת מחדל: יום לפני ההעלאה (הדוח משקף את אתמול). שנו רק אם מעלים דוח באיחור.
             </span>
           </div>
+          <div style={{ marginTop: 10 }}>
+            <strong style={{ fontSize: 13 }}>🌐 קישור חוברת האתר (אופציונלי)</strong>
+            <input placeholder="https://docs.google.com/spreadsheets/d/... (חוברת האתר)" value={siteLink} onChange={(e) => setSiteLink(e.target.value)} />
+            <button className="btn ghost" onClick={() => fetchSite(siteLink)}>טעינת חוברת האתר</button>
+          </div>
           <label className="autosync">
             <input type="checkbox" checked={autoSync} onChange={async (e) => {
               setAutoSync(e.target.checked);
               await store.set("peres:autosync", e.target.checked);
               if (e.target.checked && link) await store.set("peres:link", link);
             }} />
-            🔄 סנכרון אוטומטי — הנתונים יימשכו מהקישור השמור בכל פתיחה של הדשבורד, וגם מדי יום ב־10:00 (כשהדשבורד פתוח בדפדפן)
+            🔄 סנכרון אוטומטי — שתי החוברות (תארים + אתר) יימשכו מהקישורים השמורים בכל פתיחה של הדשבורד, וגם מדי יום ב־10:00 (כשהדשבורד פתוח בדפדפן)
           </label>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="btn" disabled={loading} onClick={fetchSheet}>{loading ? "⏳ טוען…" : "טעינה מהקישור"}</button>
@@ -1420,20 +1546,33 @@ export default function App() {
 
       {/* ---------- KPI ---------- */}
       <div className="grid-kpi">
-        <KpiCard title="מימוש תקציב כולל" actual={totals.spent} target={totals.budget} format={(v) => nis(v)}
-                 sub={`${Math.round(totals.util)}% מומש`} delta={delta?.summary.spent} deltaMoney />
+        {!view.noBudget && (
+          <KpiCard title="מימוש תקציב כולל" actual={totals.spent} target={totals.budget} format={(v) => nis(v)}
+                   sub={`${Math.round(totals.util)}% מומש`} delta={delta?.summary.spent} deltaMoney />
+        )}
         <KpiCard title="לידים ברוטו" actual={s.actual.gross} target={s.target.gross} format={num} delta={delta?.summary.gross} />
         <KpiCard title="לידים איכותיים" actual={s.actual.quality} target={s.target.quality} format={num} delta={delta?.summary.quality} />
-        <KpiCard title="% לידים איכותיים" actual={s.actual.qualityPct} target={s.target.qualityPct} format={(v) => pct(v)}
+        <KpiCard title="% לידים איכותיים" actual={s.actual.qualityPct} target={s.target.qualityPct} format={(v) => pct(v, 1)}
                  delta={delta?.summary.qualityPct} deltaSuffix=" נק'" />
-        <KpiCard title="עלות לליד ברוטו" actual={s.actual.cpl} target={s.target.cpl} format={(v) => nis(v)} inverse delta={delta?.summary.cpl} deltaMoney />
-        <KpiCard title="עלות לליד איכותי" actual={s.actual.cpql} target={s.target.cpql} format={(v) => nis(v)} inverse delta={delta?.summary.cpql} deltaMoney />
+        {!view.noBudget && (
+          <KpiCard title="עלות לליד ברוטו" actual={s.actual.cpl} target={s.target.cpl} format={(v) => nis(v)} inverse delta={delta?.summary.cpl} deltaMoney />
+        )}
+        {!view.noBudget && (
+          <KpiCard title="עלות לליד איכותי" actual={s.actual.cpql} target={s.target.cpql} format={(v) => nis(v)} inverse delta={delta?.summary.cpql} deltaMoney />
+        )}
+        {view.noBudget && s.actual.inProcess !== null && s.actual.inProcess !== undefined && (
+          <KpiCard title="לידים בתהליך" actual={s.actual.inProcess} target={null} format={num} />
+        )}
+        {view.noBudget && s.actual.invalid !== null && s.actual.invalid !== undefined && (
+          <KpiCard title="לידים לא תקינים" actual={s.actual.invalid} target={null} format={num}
+                   sub={s.actual.gross ? `${Math.round((s.actual.invalid / s.actual.gross) * 100)}% מהברוטו` : ""} />
+        )}
       </div>
 
       {/* ---------- תובנות ---------- */}
       <div className="panel" style={{ marginBottom: 26 }}>
         <h2>💡 תובנות</h2>
-        <div className="hint">מחושבות אוטומטית מהנתונים{delta ? " כולל דלתות מול הדוח הקודם" : ""} · ניתן להעמיק עם ניתוח AI</div>
+        <div className="hint">מחושבות אוטומטית מהנתונים{delta ? " כולל דלתות מול הדוח הקודם" : ""}</div>
         <div className="insight-list">
           {insights.map((ins, i) => (
             <div key={i} className={`insight ${ins.tone}`}>
@@ -1441,25 +1580,14 @@ export default function App() {
             </div>
           ))}
         </div>
-        <div className="ai-box">
-          <button className="btn ghost" onClick={runAiInsights} disabled={aiLoading}>
-            {aiLoading ? "מנתח…" : "✨ ניתוח מעמיק עם AI"}
-          </button>
-          {aiInsights && (
-            <div className="insight-list" style={{ marginTop: 12 }}>
-              {aiInsights.map((t, i) => (
-                <div key={i} className="insight warn"><span className="ico">✨</span><span>{t}</span></div>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ---------- גרפים ---------- */}
-      <div className="two-col">
+      <div className="two-col" style={view.noBudget ? { gridTemplateColumns: "1fr" } : undefined}>
+        {!view.noBudget && (
         <div className="panel">
           <h2>תקציב מול מימוש לפי כלי</h2>
-          <div className="hint">₪ — עמודה כהה: תקציב · עמודה צהובה: מומש בפועל</div>
+          <div className="hint">₪ — עמודה כהה: תקציב · עמודה צהובה: מומש בפועל · ריחוף מציג % מימוש</div>
           <div style={{ width: "100%", height: 360, direction: "ltr" }}>
             <ResponsiveContainer>
               <BarChart data={barData} layout="vertical" margin={{ top: 0, right: 6, left: 6, bottom: 0 }}>
@@ -1482,41 +1610,96 @@ export default function App() {
             </ResponsiveContainer>
           </div>
         </div>
+        )}
 
         <div className="panel">
-          <h2>התפלגות ההוצאה בין הכלים</h2>
-          <div className="hint">נתח מתוך {nis(totals.spent)} שמומשו עד כה</div>
-          <div className="pie-flex">
-            <div style={{ width: 210, height: 260, flexShrink: 0, direction: "ltr" }}>
-              <ResponsiveContainer>
-                <PieChart>
-                  <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={2} stroke={C.bg}>
-                    {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text }}
-                    labelStyle={{ color: C.text, fontWeight: 700 }} itemStyle={{ color: C.text, fontWeight: 700 }}
-                    formatter={(v, n) => [`${nis(v)} · ${Math.round((v / totals.spent) * 100)}%`, n]}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="legend">
-              {pieData.map((p, i) => (
-                <div className="legend-row" key={p.name}>
-                  <span className="legend-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                  <span className="legend-name">{p.name}</span>
-                  <span className="legend-val">{nis(p.value)} · {Math.round((p.value / totals.spent) * 100)}%</span>
+          {pieData.length > 1 ? (
+            <>
+              <h2>{view.noBudget ? "התפלגות הלידים בין המקורות" : "התפלגות ההוצאה בין הכלים"}</h2>
+              <div className="hint">{view.noBudget
+                ? `נתח של כל מקור מתוך ${num(pieTotal)} לידים ברוטו`
+                : `נתח של כל כלי מתוך ${nis(totals.spent)} שמומשו עד כה (לא אחוז ניצול תקציב)`}</div>
+              <div className="pie-flex">
+                <div style={{ width: 210, height: 260, flexShrink: 0, direction: "ltr" }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie data={pieData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={95} paddingAngle={2} stroke={C.bg}>
+                        {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text }}
+                        labelStyle={{ color: C.text, fontWeight: 700 }} itemStyle={{ color: C.text, fontWeight: 700 }}
+                        formatter={(v, n) => [view.noBudget
+                          ? `${num(v)} לידים · ${Math.round((v / pieTotal) * 100)}%`
+                          : `${nis(v)} · ${Math.round((v / pieTotal) * 100)}% מההוצאה`, n]}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
                 </div>
-              ))}
-            </div>
-          </div>
+                <div className="legend">
+                  {pieData.map((p, i) => (
+                    <div className="legend-row" key={p.name}>
+                      <span className="legend-dot" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                      <span className="legend-name">{p.name}</span>
+                      <span className="legend-val">{view.noBudget ? num(p.value) : nis(p.value)} · {Math.round((p.value / pieTotal) * 100)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            /* כלי יחיד — התפלגות בין כלים חסרת משמעות, במקומה: דונאט מימוש תקציב */
+            <>
+              <h2>מימוש התקציב{pieData.length === 1 ? ` · ${pieData[0].name}` : ""}</h2>
+              <div className="hint">{nis(totals.spent)} מומשו מתוך {nis(totals.budget)}</div>
+              <div className="pie-flex">
+                <div style={{ width: 210, height: 260, flexShrink: 0, direction: "ltr", position: "relative" }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie
+                        data={[
+                          { name: "מומש", value: totals.spent },
+                          { name: "יתרת תקציב", value: Math.max(totals.budget - totals.spent, 0) },
+                        ]}
+                        dataKey="value" nameKey="name" innerRadius={62} outerRadius={95} paddingAngle={2} stroke={C.bg}
+                        startAngle={90} endAngle={-270}
+                      >
+                        <Cell fill={C.amber} />
+                        <Cell fill={C.panelSoft} />
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text }}
+                        labelStyle={{ color: C.text, fontWeight: 700 }} itemStyle={{ color: C.text, fontWeight: 700 }}
+                        formatter={(v, n) => [nis(v), n]}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                    <span style={{ fontSize: 30, fontWeight: 900, color: C.amber }}>{Math.round(totals.util)}%</span>
+                    <span style={{ fontSize: 11.5, color: C.dim }}>מימוש</span>
+                  </div>
+                </div>
+                <div className="legend">
+                  <div className="legend-row">
+                    <span className="legend-dot" style={{ background: C.amber }} />
+                    <span className="legend-name">מומש</span>
+                    <span className="legend-val">{nis(totals.spent)} · {Math.round(totals.util)}%</span>
+                  </div>
+                  <div className="legend-row">
+                    <span className="legend-dot" style={{ background: C.panelSoft, border: `1px solid ${C.line}` }} />
+                    <span className="legend-name">יתרת תקציב</span>
+                    <span className="legend-val">{nis(Math.max(totals.budget - totals.spent, 0))} · {Math.max(100 - Math.round(totals.util), 0)}%</span>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       {/* ---------- טבלת כלים ---------- */}
       <div className="panel" style={{ borderRadius: drillOpen && !view.isHarvard && view.data.campaigns.length > 0 ? "14px 14px 0 0" : 14 }}>
-        <h2>{view.isHarvard ? "הארווארד · ביצועים לפי כלי" : "ביצועים לפי כלי (BOF)"}</h2>
+        <h2>{view.isHarvard ? "הארווארד · ביצועים לפי כלי" : view.noBudget ? "ביצועים לפי מקור (Organic)" : "ביצועים לפי כלי (BOF)"}</h2>
         <div className="hint">{view.isHarvard
           ? "לחיצה על כותרת ממיינת · חצים ירוקים/אדומים = שינוי מאז הדוח הקודם"
           : 'לחיצה על כותרת ממיינת · לחיצה על שורת "חיפוש" פותחת דריל־דאון · חצים ירוקים/אדומים = שינוי מאז הדוח הקודם'}</div>
@@ -1524,14 +1707,14 @@ export default function App() {
           <table>
             <thead>
               <tr>
-                <th>כלי</th>
-                <Th k="budget" sort={sort} setSort={setSort}>תקציב</Th>
-                <Th k="spent" sort={sort} setSort={setSort}>מומש</Th>
-                <th>% מימוש</th>
+                <th>{view.noBudget ? "מקור" : "כלי"}</th>
+                {!view.noBudget && <Th k="budget" sort={sort} setSort={setSort}>תקציב</Th>}
+                {!view.noBudget && <Th k="spent" sort={sort} setSort={setSort}>מומש</Th>}
+                {!view.noBudget && <th>% מימוש</th>}
                 <Th k="gross" sort={sort} setSort={setSort}>לידים ברוטו</Th>
-                <Th k="cpl" sort={sort} setSort={setSort}>עלות לליד</Th>
+                {!view.noBudget && <Th k="cpl" sort={sort} setSort={setSort}>עלות לליד</Th>}
                 <Th k="quality" sort={sort} setSort={setSort}>לידים איכותיים</Th>
-                <Th k="cpql" sort={sort} setSort={setSort}>עלות לליד איכותי</Th>
+                {!view.noBudget && <Th k="cpql" sort={sort} setSort={setSort}>עלות לליד איכותי</Th>}
                 <Th k="qPct" sort={sort} setSort={setSort}>% איכות</Th>
                 <Th k="inProc" sort={sort} setSort={setSort}>בתהליך</Th>
               </tr>
@@ -1550,20 +1733,22 @@ export default function App() {
                               onClick={(e) => { e.stopPropagation(); toggleActive(p.name); }} />
                       {p.name}{p.drill && <span className="tag">{drillOpen ? "דריל־דאון ▴" : "דריל־דאון ▾"}</span>}
                     </td>
-                    <td>{p.budget ? nis(p.budget) : "—"}</td>
-                    <td style={{ fontWeight: 700 }}>{nis(p.spent)}{pd && <Delta v={pd.spent} money inverse />}</td>
-                    <td>
-                      <div className="util-cell">
-                        <div className="util-track">
-                          <div className="util-fill" style={{ width: `${Math.min(util ?? 0, 100)}%`, background: util > 90 ? C.coral : C.blue }} />
+                    {!view.noBudget && <td>{p.budget ? nis(p.budget) : "—"}</td>}
+                    {!view.noBudget && <td style={{ fontWeight: 700 }}>{nis(p.spent)}{pd && <Delta v={pd.spent} money inverse />}</td>}
+                    {!view.noBudget && (
+                      <td>
+                        <div className="util-cell">
+                          <div className="util-track">
+                            <div className="util-fill" style={{ width: `${Math.min(util ?? 0, 100)}%`, background: util > 90 ? C.coral : C.blue }} />
+                          </div>
+                          <span style={{ color: C.dim, fontSize: 12, minWidth: 34 }}>{util === null ? "—" : Math.round(util) + "%"}</span>
                         </div>
-                        <span style={{ color: C.dim, fontSize: 12, minWidth: 34 }}>{util === null ? "—" : Math.round(util) + "%"}</span>
-                      </div>
-                    </td>
+                      </td>
+                    )}
                     <td>{num(p.gross)}{pd && <Delta v={pd.gross} />}</td>
-                    <td>{nis(p.cpl)}</td>
+                    {!view.noBudget && <td>{nis(p.cpl)}</td>}
                     <td style={{ fontWeight: 700, color: C.teal }}>{num(p.quality)}{pd && <Delta v={pd.quality} />}</td>
-                    <td>{nis(p.cpql)}</td>
+                    {!view.noBudget && <td>{nis(p.cpql)}</td>}
                     <td><span className="qdot" style={{ background: qualityColor(p.qPct) }} />{pct(p.qPct, 1)}</td>
                     <td>{num(p.inProc)}{p.inProcPct !== null && p.inProcPct !== undefined ? ` (${pct(p.inProcPct)})` : ""}</td>
                   </tr>
@@ -1638,7 +1823,7 @@ export default function App() {
           const trend = (r) => {
             if (!isActive(r.name)) return { txt: "כבוי", color: C.dim };
             if ((r.quality || 0) > 0) return { txt: "🟢 מייצר איכות", color: C.teal };
-            if ((r.spent || 0) > 300 && (r.gross || 0) <= 0) return { txt: "🔴 שורף בלי לידים", color: C.coral };
+            if (!view.noBudget && (r.spent || 0) > 300 && (r.gross || 0) <= 0) return { txt: "🔴 שורף בלי לידים", color: C.coral };
             if ((r.gross || 0) > 0) return { txt: "🟡 לידים בלי איכות", color: C.amber };
             return { txt: "—", color: C.dim };
           };
@@ -1648,16 +1833,18 @@ export default function App() {
             return (
               <tr key={`${r.type}-${r.name}`} style={{ opacity: on ? 1 : 0.45 }}>
                 <td style={{ fontWeight: 700 }}>{r.name}</td>
-                <td>
-                  <div className="util-cell">
-                    <div className="util-track"><div className="util-fill" style={{ width: `${((r.spent || 0) / maxSpent) * 100}%`, background: C.amber }} /></div>
-                    <span style={{ minWidth: 60, fontWeight: 700 }}>{nis(r.spent)}</span>
-                  </div>
-                </td>
+                {!view.noBudget && (
+                  <td>
+                    <div className="util-cell">
+                      <div className="util-track"><div className="util-fill" style={{ width: `${((r.spent || 0) / maxSpent) * 100}%`, background: C.amber }} /></div>
+                      <span style={{ minWidth: 60, fontWeight: 700 }}>{nis(r.spent)}</span>
+                    </div>
+                  </td>
+                )}
                 <td>{num(r.gross)}</td>
-                <td>{nis(r.cplDay)}</td>
+                {!view.noBudget && <td>{nis(r.cplDay)}</td>}
                 <td style={{ fontWeight: 700, color: (r.quality || 0) > 0 ? C.teal : undefined }}>{num(r.quality)}</td>
-                <td>{nis(r.cpqlDay)}</td>
+                {!view.noBudget && <td>{nis(r.cpqlDay)}</td>}
                 <td style={{ color: t.color, fontSize: 12.5, fontWeight: 700 }}>{t.txt}</td>
               </tr>
             );
@@ -1671,20 +1858,20 @@ export default function App() {
               <table>
                 <thead>
                   <tr>
-                    <th>כלי / קמפיין</th>
-                    <Th k="spent" sort={daySort} setSort={setDaySort}>מומש ביממה</Th>
+                    <th>{view.noBudget ? "מקור" : "כלי / קמפיין"}</th>
+                    {!view.noBudget && <Th k="spent" sort={daySort} setSort={setDaySort}>מומש ביממה</Th>}
                     <Th k="gross" sort={daySort} setSort={setDaySort}>לידים ביממה</Th>
-                    <Th k="cplDay" sort={daySort} setSort={setDaySort}>עלות לליד יומית</Th>
+                    {!view.noBudget && <Th k="cplDay" sort={daySort} setSort={setDaySort}>עלות לליד יומית</Th>}
                     <Th k="quality" sort={daySort} setSort={setDaySort}>איכותיים ביממה</Th>
-                    <Th k="cpqlDay" sort={daySort} setSort={setDaySort}>עלות לאיכותי יומית</Th>
+                    {!view.noBudget && <Th k="cpqlDay" sort={daySort} setSort={setDaySort}>עלות לאיכותי יומית</Th>}
                     <th>מגמה</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr className="group-row"><td colSpan={7} style={{ color: C.blue }}>🏗️ {view.isHarvard ? "כלי הארווארד" : "כלים · רמת מאקרו"}</td></tr>
+                  <tr className="group-row"><td colSpan={7} style={{ color: C.blue }}>🏗️ {view.isHarvard ? "כלי הארווארד" : view.noBudget ? "מקורות האתר" : "כלים · רמת מאקרו"}</td></tr>
                   {tools.length ? rowsFor(tools, maxTools)
                     : <tr><td colSpan={7} style={{ color: C.dim }}>אין תנועות ברמת הכלים ביממה האחרונה</td></tr>}
-                  {!view.isHarvard && (
+                  {!view.isHarvard && !view.noBudget && (
                     <>
                       <tr className="group-row"><td colSpan={7} style={{ color: C.violet }}>🔍 דריל־דאון · קמפייני חיפוש</td></tr>
                       {search.length ? rowsFor(search, maxSearch)
