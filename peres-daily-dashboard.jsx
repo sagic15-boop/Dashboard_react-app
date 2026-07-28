@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  ComposedChart, Line, Legend,
 } from "recharts";
 
 /* ------------------------------------------------------------------ */
@@ -53,6 +54,36 @@ const DEMO = {
 const DEMO_DAY_HARVARD = [
   { name: "Linkedin", type: "כלי", spent: 1850, gross: 12, quality: 1 },
 ];
+/* נתוני דוגמה לטאב "מבט על" — מוצגים רק עד שנצברים שני ימים בארכיון */
+const DEMO_TREND = [
+  { label: "05.07", "תקציב יומי": 11200, "איכותיים תארים": 5, "תקציב הארווארד": 1150, "איכותיים הארווארד": 0, "לידים ברוטו אתר": 31, "איכותיים אתר": 4 },
+  { label: "06.07", "תקציב יומי": 12800, "איכותיים תארים": 7, "תקציב הארווארד": 1240, "איכותיים הארווארד": 1, "לידים ברוטו אתר": 38, "איכותיים אתר": 6 },
+  { label: "07.07", "תקציב יומי": 9800,  "איכותיים תארים": 4, "תקציב הארווארד": 1090, "איכותיים הארווארד": 0, "לידים ברוטו אתר": 26, "איכותיים אתר": 3 },
+  { label: "08.07", "תקציב יומי": 13600, "איכותיים תארים": 9, "תקציב הארווארד": 1310, "איכותיים הארווארד": 1, "לידים ברוטו אתר": 41, "איכותיים אתר": 7 },
+  { label: "09.07", "תקציב יומי": 12100, "איכותיים תארים": 6, "תקציב הארווארד": 1180, "איכותיים הארווארד": 0, "לידים ברוטו אתר": 35, "איכותיים אתר": 5 },
+  { label: "10.07", "תקציב יומי": 8400,  "איכותיים תארים": 3, "תקציב הארווארד": 960,  "איכותיים הארווארד": 0, "לידים ברוטו אתר": 22, "איכותיים אתר": 2 },
+  { label: "11.07", "תקציב יומי": 7900,  "איכותיים תארים": 3, "תקציב הארווארד": 890,  "איכותיים הארווארד": 1, "לידים ברוטו אתר": 19, "איכותיים אתר": 2 },
+  { label: "12.07", "תקציב יומי": 14200, "איכותיים תארים": 8, "תקציב הארווארד": 1380, "איכותיים הארווארד": 1, "לידים ברוטו אתר": 44, "איכותיים אתר": 6 },
+  { label: "13.07", "תקציב יומי": 13100, "איכותיים תארים": 7, "תקציב הארווארד": 1290, "איכותיים הארווארד": 0, "לידים ברוטו אתר": 39, "איכותיים אתר": 5 },
+  { label: "14.07", "תקציב יומי": 12500, "איכותיים תארים": 6, "תקציב הארווארד": 1220, "איכותיים הארווארד": 1, "לידים ברוטו אתר": 36, "איכותיים אתר": 4 },
+  { label: "15.07", "תקציב יומי": 11800, "איכותיים תארים": 5, "תקציב הארווארד": 1160, "איכותיים הארווארד": 0, "לידים ברוטו אתר": 33, "איכותיים אתר": 5 },
+  { label: "16.07", "תקציב יומי": 13900, "איכותיים תארים": 8, "תקציב הארווארד": 1340, "איכותיים הארווארד": 1, "לידים ברוטו אתר": 42, "איכותיים אתר": 7 },
+  { label: "17.07", "תקציב יומי": 10600, "איכותיים תארים": 4, "תקציב הארווארד": 1050, "איכותיים הארווארד": 0, "לידים ברוטו אתר": 28, "איכותיים אתר": 3 },
+  { label: "18.07", "תקציב יומי": 12300, "איכותיים תארים": 7, "תקציב הארווארד": 1210, "איכותיים הארווארד": 1, "לידים ברוטו אתר": 37, "איכותיים אתר": 6 },
+];
+
+/* נתוני דוגמה לבורר הקמפיינים בגרף האיכות (מבט על) — מוצגים עד שנצבר ארכיון אמיתי */
+const DEMO_CAMP_QUALITY = {
+  "PMAX": { q: [2,3,1,3,2,1,1,3,2,2,2,3,1,2], cpl: [2900,2600,3400,2400,2800,3600,3500,2300,2500,2700,2800,2300,3300,2600] },
+  "PMAX Degree": { q: [1,2,1,2,1,0,1,2,2,1,1,2,1,2], cpl: [3100,2500,3300,2600,3200,null,3000,2500,2600,3100,3200,2600,3200,2600] },
+  "חיפוש": { q: [2,2,1,3,2,1,1,2,2,2,1,2,1,2], cpl: [420,410,520,340,430,600,590,360,380,420,540,360,560,410] },
+  "פייסבוק תואר ראשון": { q: [0,1,0,1,1,0,0,1,1,1,0,1,0,1], cpl: [null,2900,null,2700,2900,null,null,2700,2900,2800,null,2700,null,2900] },
+  "פייסבוק תואר שני": { q: [0,0,1,0,0,1,0,1,0,0,1,0,1,0], cpl: [null,null,4900,null,null,5100,null,4800,null,null,5000,null,4900,null] },
+  "חיפוש · מותג": { q: [3,4,2,4,3,2,1,4,3,3,2,4,2,3], cpl: [110,100,140,95,115,150,175,95,120,110,140,95,145,115] },
+  "חיפוש · גנרי ראשון": { q: [1,1,0,2,1,0,0,2,1,1,0,2,0,1], cpl: [2600,2500,null,2300,2500,null,null,2300,2600,2500,null,2300,null,2600] },
+  "חיפוש · גנרי - RLSA": { q: [0,1,1,1,0,0,1,1,1,0,1,1,0,1], cpl: [null,3500,3400,3300,null,null,3600,3300,3400,null,3500,3300,null,3500] },
+};
+
 const DEMO_DAY = [
   { name: "PMAX",               type: "כלי",   spent: 2450, gross: 14, quality: 1 },
   { name: "חיפוש",              type: "כלי",   spent: 980,  gross: 31, quality: 3 },
@@ -420,6 +451,22 @@ const Delta = ({ v, inverse, suffix = "", money }) => {
 /* ------------------------------------------------------------------ */
 /*  תובנות אוטומטיות                                                    */
 /* ------------------------------------------------------------------ */
+
+/* מיצוי מדדי-על מדוח מפורסר בודד — לפילוח תארים / הארווארד / אתר אינו רלוונטי כאן */
+function reportTotals(rep) {
+  if (!rep) return null;
+  const budgetTarget = (rep.totalsRow && rep.totalsRow.budget) || (rep.platforms || []).reduce((a, b) => a + (b.budget || 0), 0);
+  const spent = (rep.totalsRow && rep.totalsRow.spent) || (rep.platforms || []).reduce((a, b) => a + (b.spent || 0), 0);
+  const degQuality = rep.summary && rep.summary.actual ? (rep.summary.actual.quality || 0) : 0;
+  const harvardQuality = rep.harvard
+    ? ((rep.harvard.total && rep.harvard.total.quality) ?? (rep.harvard.platforms || []).reduce((a, b) => a + (b.quality || 0), 0))
+    : null;
+  const harvardSpent = rep.harvard
+    ? ((rep.harvard.total && rep.harvard.total.spent) ?? (rep.harvard.platforms || []).reduce((a, b) => a + (b.spent || 0), 0))
+    : null;
+  const cpqlTotal = rep.summary && rep.summary.actual ? rep.summary.actual.cpql : null;
+  return { budgetTarget, spent, degQuality, harvardQuality, harvardSpent, cpqlTotal };
+}
 
 function buildInsights(data, delta, isActive = () => true) {
   const out = [];
@@ -818,6 +865,8 @@ export default function App() {
   const [calOpen, setCalOpen] = useState(false);
   const [calYear, setCalYear] = useState(new Date().getFullYear());
   const [dayIndex, setDayIndex] = useState([]);          /* תאריכים שיש להם דוח שמור */
+  const [trendData, setTrendData] = useState([]);        /* סדרת מגמה יומית לטאב "מבט על" */
+  const [qualSel, setQualSel] = useState("__all__");      /* בחירת קמפיין בגרף האיכות של מבט-על */
   const [viewingDay, setViewingDay] = useState(null);    /* צפייה בדוח היסטורי */
   const [calPaste, setCalPaste] = useState(null);        /* {date} — הזנת דוח ליום ספציפי */
   const [calPasteText, setCalPasteText] = useState("");
@@ -825,6 +874,38 @@ export default function App() {
   const refreshDayIndex = useCallback(async () => {
     const keys = await store.list(DAY_PREFIX);
     setDayIndex(keys.map((k) => k.slice(DAY_PREFIX.length)).sort());
+  }, []);
+
+  const refreshTrend = useCallback(async () => {
+    const mainKeys = (await store.list(DAY_PREFIX)).map((k) => k.slice(DAY_PREFIX.length));
+    const siteKeys = (await store.list("peres:siteday:")).map((k) => k.slice("peres:siteday:".length));
+    const allDays = [...new Set([...mainKeys, ...siteKeys])].sort().slice(-32); /* עד חודש אחורה */
+    const rows = [];
+    for (const iso of allDays) {
+      const mainRec = mainKeys.includes(iso) ? await store.get(dayKey(iso)) : null;
+      const siteRec = siteKeys.includes(iso) ? await store.get("peres:siteday:" + iso) : null;
+      const mt = mainRec ? reportTotals(mainRec.data) : null;
+      const sSum = siteRec && siteRec.data && siteRec.data.summary ? siteRec.data.summary.actual : null;
+      /* מפת קמפיינים מצטברת ליום — לבחירת קמפיין ספציפי בגרף האיכות */
+      const plat = mainRec ? Object.fromEntries([
+        ...(mainRec.data.platforms || []).map((x) => [x.name, { spent: x.spent || 0, quality: x.quality || 0 }]),
+        ...(mainRec.data.campaigns || []).filter((c) => (c.spent || 0) > 0 || (c.quality || 0) > 0)
+          .map((c) => [`חיפוש · ${c.name}`, { spent: c.spent || 0, quality: c.quality || 0 }]),
+      ]) : null;
+      rows.push({
+        iso, label: iso.split("-").reverse().slice(0, 2).join("."),
+        plat,
+        budgetTarget: mt ? mt.budgetTarget : null,
+        spent: mt ? Math.round(mt.spent) : null,
+        degQuality: mt ? mt.degQuality : null,
+        harvardSpent: mt && mt.harvardSpent !== null ? Math.round(mt.harvardSpent) : null,
+        harvardQuality: mt ? mt.harvardQuality : null,
+        siteQuality: sSum ? (sSum.quality || 0) : null,
+        siteGross: sSum ? (sSum.gross || 0) : null,
+        cpqlTotal: mt && mt.cpqlTotal ? Math.round(mt.cpqlTotal) : null,
+      });
+    }
+    setTrendData(rows);
   }, []);
 
   /* הדוח הקודם = הדוח השמור בארכיון ליום הקרוב ביותר שלפני תאריך הארכוב הנוכחי.
@@ -901,9 +982,10 @@ export default function App() {
       } else if (prev) setPrevSnap(prev);
     })();
     refreshDayIndex();
-  }, [refreshDayIndex]);
+    refreshTrend();
+  }, [refreshDayIndex, refreshTrend]);
 
-  const loadCsv = useCallback(async (text, targetDay = null) => {
+  const loadCsv = useCallback(async (text, targetDay = null, archTo = null) => {
     const parsed = parseReport(text);
     if (parsed) {
       const now = new Date().toISOString();
@@ -915,12 +997,14 @@ export default function App() {
         setStatus({ kind: "ok", msg: `הדוח נשמר בארכיון לתאריך ${heDayLabel(targetDay)}` });
         return;
       }
-      const yIso = /^\d{4}-\d{2}-\d{2}$/.test(archiveDate) ? archiveDate : yesterdayIso();
+      /* archTo — סנכרון אוטומטי מעביר תאריך טרי, כדי שטאב שנשאר פתוח ימים לא יארכב לתאריך ישן */
+      const yIso = archTo || (/^\d{4}-\d{2}-\d{2}$/.test(archiveDate) ? archiveDate : yesterdayIso());
       const latest = await store.get("peres:latest");
       await store.set("peres:latest", { savedAt: now, archivedFor: yIso, data: parsed });
       /* ארכוב אוטומטי: דוח שנטען היום משקף את אתמול — נשמר לתאריך יום קודם (או לתאריך שנבחר ידנית) */
       await store.set(dayKey(yIso), { savedAt: now, reportDay: yIso, data: parsed });
       await refreshDayIndex();
+      refreshTrend();
       /* הדלתא נגזרת מהארכיון: מול הדוח של היום השמור הקרוב שלפני */
       const prev = await findPrevSnapFor(yIso);
       setPrevSnap(prev);
@@ -934,7 +1018,7 @@ export default function App() {
       setStatus({ kind: "err", msg: "לא זוהה מבנה הדוח בקובץ. ודאו שהלשונית הנכונה מקושרת (עם טבלאות פלטפורמה/קמפיין)." });
       if (targetDay) setCalPaste({ date: targetDay, error: true });
     }
-  }, [refreshDayIndex, archiveDate, findPrevSnapFor]);
+  }, [refreshDayIndex, archiveDate, findPrevSnapFor, refreshTrend]);
 
   /* פתיחת דוח היסטורי מהארכיון — הדלתא מחושבת מול היום השמור הקרוב שלפניו */
   const openDay = useCallback(async (iso) => {
@@ -1051,6 +1135,7 @@ export default function App() {
       setSitePrev(null);
     }
     await store.set("peres:site:latest", { savedAt: now, archivedFor: yIso, data: parsed });
+    await store.set("peres:siteday:" + yIso, { savedAt: now, reportDay: yIso, data: parsed });
     setSiteData(parsed);
     setSiteUpdatedAt(new Date(now));
     return true;
@@ -1071,6 +1156,7 @@ export default function App() {
         const ok = await loadSiteCsv(text);
         if (ok) {
           await store.set("peres:site:link", theLink);
+          refreshTrend();
           if (!silent) setStatus({ kind: "ok", msg: "חוברת האתר נטענה ונשמרה" });
           return;
         }
@@ -1098,6 +1184,7 @@ export default function App() {
             const ok = await loadSiteCsv(chosen);
             if (ok) {
               await store.set("peres:site:link", theLink);
+              refreshTrend();
               if (!silent) setStatus({ kind: "ok", msg: "חוברת האתר נטענה — הלשונית אותרה אוטומטית בתוך החוברת" });
               return;
             }
@@ -1107,7 +1194,7 @@ export default function App() {
     }
 
     if (!silent) setStatus({ kind: "err", msg: "לא הצלחתי למשוך את חוברת האתר. שימו לב: זו חוברת נפרדת עם הרשאות משלה — השיתוף של חוברת התארים לא חל עליה. בחוברת האתר: שיתוף ← גישה כללית ← כל מי שיש לו את הקישור ← צפייה, ואז נסו שוב. (לחלופין: קובץ ← שיתוף ← פרסום באינטרנט ← בחרו את לשונית האתר + CSV, והדביקו את הקישור שנוצר בשדה חוברת האתר.)" });
-  }, [loadSiteCsv]);
+  }, [loadSiteCsv, refreshTrend]);
 
   const fetchSiteRef = React.useRef(null);
   fetchSiteRef.current = fetchSite;
@@ -1153,7 +1240,7 @@ export default function App() {
         const text = await res.text();
         /* אם חזר HTML (עמוד התחברות של גוגל) — הגיליון לא נגיש, מנסים מסלול הבא */
         if (/^\s*</.test(text)) throw new Error("not-csv");
-        await loadCsv(text);
+        await loadCsv(text, null, silent ? yesterdayIso() : null);
         await store.set("peres:link", theLink);
         ok = true;
         break;
@@ -1397,6 +1484,9 @@ export default function App() {
         .util-track { flex:1; min-width:70px; height:5px; background:${C.panelSoft}; border-radius:3px; overflow:hidden; }
         .util-fill { height:100%; border-radius:3px; }
         .group-row td { background:${C.panelSoft}; font-size:13px; font-weight:900; border-bottom:1px solid ${C.line}; padding-top:11px; padding-bottom:11px; }
+        .qual-select { background:${C.bg}; border:1px solid ${C.line}; color:${C.text}; border-radius:9px; padding:7px 12px; font-family:inherit; font-size:13px; font-weight:700; cursor:pointer; max-width:60%; }
+        .qual-select:hover { border-color:${C.amber}; }
+        .qual-select option { background:${C.panel}; color:${C.text}; }
         .tag { font-size:11px; background:${C.panelSoft}; color:${C.amber}; border-radius:6px; padding:2px 8px; margin-right:8px; font-weight:700; }
         .drill { margin-top:-10px; margin-bottom:26px; border:1px solid ${C.line}; border-top:none; border-radius:0 0 14px 14px; background:${C.panelSoft}; padding:14px 18px 18px; }
         .table-wrap { overflow-x:auto; }
@@ -1481,7 +1571,7 @@ export default function App() {
       {/* ---------- כותרת ---------- */}
       <div className="head">
         <div>
-          <h1>המרכז האקדמי פרס · <span>{view.isHarvard ? "הארווארד" : board === "site" ? "אתר" : "דשבורד יומי"}</span></h1>
+          <h1>המרכז האקדמי פרס · <span>{view.isHarvard ? "הארווארד" : board === "site" ? "אתר" : board === "summary" ? "מבט על" : "דשבורד יומי"}</span></h1>
           <div className="sub">
             {board === "site"
               ? (siteUpdatedAt ? `חוברת האתר עודכנה: ${heDate(siteUpdatedAt)}` : "חוברת האתר — טרם נטענה")
@@ -1500,6 +1590,7 @@ export default function App() {
       </div>
 
       <div className="board-tabs">
+        <button className={`tab ${board === "summary" ? "on" : ""}`} onClick={() => { refreshTrend(); setBoard("summary"); }}>📈 מבט על</button>
         <button className={`tab ${board === "main" ? "on" : ""}`} onClick={() => setBoard("main")}>🎓 תארים</button>
         <button className={`tab ${board === "harvard" ? "on" : ""}`} onClick={() => setBoard("harvard")}>
           🏛️ הארווארד{!data.harvard ? " (אין נתונים)" : ""}
@@ -1588,7 +1679,7 @@ export default function App() {
         </div>
       )}
 
-      {(board !== "site" || siteData) && (<>
+      {board !== "summary" && (board !== "site" || siteData) && (<>
       {/* ---------- KPI ---------- */}
       <div className="grid-kpi">
         {!view.noBudget && (
@@ -1938,6 +2029,195 @@ export default function App() {
       )}
 
       </>)}
+
+      {/* ---------- סיכום נתונים · מגמות ---------- */}
+      {board === "summary" && (() => {
+        const t = trendData;
+        const isDemo = t.length < 2;
+        const latest = isDemo
+          ? { spent: 263033, budgetTarget: 637000, degQuality: 164, harvardQuality: 9, harvardSpent: 23543, cpqlTotal: 1604 }
+          : ([...t].reverse().find((r) => r.spent !== null) || {});
+        const latestSite = isDemo ? { siteQuality: 98 } : ([...t].reverse().find((r) => r.siteQuality !== null) || {});
+        /* "מה הגיע בכל יום" = הפרש בין כל יום שמור ליום השמור שלפניו (שלילי מתאפס — למשל במעבר חודש) */
+        const dd = (a, b) => (a !== null && a !== undefined && b !== null && b !== undefined ? Math.max(b - a, 0) : null);
+        let daily = [];
+        for (let i = 1; i < t.length; i++) {
+          const a = t[i - 1], b = t[i];
+          daily.push({
+            label: b.label,
+            "תקציב יומי": dd(a.spent, b.spent),
+            "איכותיים תארים": dd(a.degQuality, b.degQuality),
+            "תקציב הארווארד": dd(a.harvardSpent, b.harvardSpent),
+            "איכותיים הארווארד": dd(a.harvardQuality, b.harvardQuality),
+            "לידים ברוטו אתר": dd(a.siteGross, b.siteGross),
+            "איכותיים אתר": dd(a.siteQuality, b.siteQuality),
+          });
+        }
+        if (isDemo) daily = DEMO_TREND;
+        const has = (key) => daily.some((r) => r[key] !== null && r[key] !== undefined);
+
+        /* --- בורר קמפיין לגרף האיכות: "כללי" או קמפיין ספציפי, איכותיים + עלות לליד יומיים --- */
+        const campNames = (() => {
+          if (isDemo) return Object.keys(DEMO_CAMP_QUALITY);
+          const set = new Set();
+          t.forEach((r) => r.plat && Object.keys(r.plat).forEach((n) => set.add(n)));
+          return [...set].sort();
+        })();
+        const effSel = (qualSel === "__all__" || campNames.includes(qualSel)) ? qualSel : "__all__";
+        const qualDaily = (() => {
+          if (isDemo) {
+            if (effSel === "__all__")
+              return DEMO_TREND.map((r) => ({ label: r.label, q: r["איכותיים תארים"], cpl: Math.round((r["תקציב יומי"] || 0) / Math.max(r["איכותיים תארים"] || 1, 1)) }));
+            const c = DEMO_CAMP_QUALITY[effSel];
+            return DEMO_TREND.map((r, i) => ({ label: r.label, q: c.q[i], cpl: c.cpl[i] }));
+          }
+          const out = [];
+          for (let i = 1; i < t.length; i++) {
+            const a = t[i - 1], b = t[i];
+            if (effSel === "__all__") {
+              const q = dd(a.degQuality, b.degQuality);
+              const sp = dd(a.spent, b.spent);
+              out.push({ label: b.label, q, cpl: q ? Math.round((sp || 0) / q) : null });
+            } else {
+              const pa = a.plat && a.plat[effSel], pb = b.plat && b.plat[effSel];
+              if (pa && pb) {
+                const q = Math.max((pb.quality || 0) - (pa.quality || 0), 0);
+                const sp = Math.max((pb.spent || 0) - (pa.spent || 0), 0);
+                out.push({ label: b.label, q, cpl: q ? Math.round(sp / q) : null });
+              } else out.push({ label: b.label, q: null, cpl: null });
+            }
+          }
+          return out;
+        })();
+        const paidSpent = (latest.spent || 0) + (latest.harvardSpent || 0);
+        const totalQ = (latest.degQuality || 0) + (latest.harvardQuality || 0) + (latestSite.siteQuality || 0);
+        const range = isDemo ? `${DEMO_TREND[0].label} – ${DEMO_TREND[DEMO_TREND.length - 1].label}` : (t.length ? `${t[0].label} – ${t[t.length - 1].label}` : "");
+        const overviewCards = [
+          { title: "תקציב כולל (תארים)", val: nis(latest.spent ?? 0), sub: latest.budgetTarget ? `מתוך ${nis(latest.budgetTarget)} · ${Math.round(((latest.spent || 0) / latest.budgetTarget) * 100)}%` : "", color: C.amber },
+          { title: "לידים איכותיים · תארים", val: num(latest.degQuality ?? 0), color: C.blue },
+          { title: "לידים איכותיים · הארווארד", val: latest.harvardQuality !== null && latest.harvardQuality !== undefined ? num(latest.harvardQuality) : "—", color: C.violet },
+          { title: "לידים איכותיים · אתר", val: latestSite.siteQuality !== null && latestSite.siteQuality !== undefined ? num(latestSite.siteQuality) : "—", color: C.teal },
+          { title: "עלות לליד איכותי · טוטאל", val: totalQ > 0 && paidSpent > 0 ? nis(paidSpent / totalQ) : (latest.cpqlTotal ? nis(latest.cpqlTotal) : "—"),
+            sub: totalQ > 0 && paidSpent > 0 ? `${nis(paidSpent)} ÷ ${num(totalQ)} איכותיים (כולל אתר)` : "", color: C.coral },
+        ];
+        const tip = (fmt) => ({
+          contentStyle: { background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text },
+          labelStyle: { color: C.text, fontWeight: 700 }, itemStyle: { color: C.text },
+          formatter: fmt,
+        });
+        const axis = { tick: { fill: C.dim, fontSize: 11 }, stroke: C.line };
+        const chartCard = (title, hint, children, empty) => (
+          <div className="panel" style={{ marginBottom: 18 }}>
+            <h2>{title}</h2>
+            <div className="hint">{hint}</div>
+            {empty ? (
+              <div className="hint" style={{ marginBottom: 0 }}>{empty}</div>
+            ) : (
+              <div style={{ width: "100%", height: 280, direction: "ltr" }}>
+                <ResponsiveContainer>{children}</ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        );
+        return (
+          <>
+            {isDemo && (
+              <div className="status" style={{ borderColor: C.amber, color: C.amber }}>
+                🧪 נתוני דוגמה להמחשה — כך ייראה "מבט על" כשיצטברו ימים בארכיון. הגרפים יתמלאו אוטומטית בנתונים אמיתיים ברגע שיהיו לפחות שני ימים שמורים (טעינה יומית או השלמה דרך לוח השנה).
+              </div>
+            )}
+            <div className="grid-kpi" style={{ marginBottom: 20 }}>
+              {overviewCards.map((c, i) => (
+                <div className="kpi" key={i}>
+                  <div className="kpi-title">{c.title}</div>
+                  <div className="kpi-value" style={{ color: c.color }}>{c.val}</div>
+                  <div className="kpi-target">{c.sub || (range && `טווח: ${range}`)}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="panel" style={{ marginBottom: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <h2>⭐ איכות לפי קמפיין · לפי יום</h2>
+                <select className="qual-select" value={effSel} onChange={(e) => setQualSel(e.target.value)}>
+                  <option value="__all__">כל הקמפיינים (כללי · תארים)</option>
+                  {campNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+              <div className="hint">
+                {effSel === "__all__" ? "סך הלידים האיכותיים והעלות לליד איכותי בכל יום — כלל התארים" : `קמפיין "${effSel}" — לידים איכותיים ועלות לליד איכותי בכל יום`}
+                {isDemo ? " · נתוני דוגמה" : ""}
+              </div>
+              {qualDaily.length === 0 || qualDaily.every((r) => r.q === null) ? (
+                <div className="hint" style={{ marginBottom: 0 }}>אין עדיין נתונים לקמפיין הזה בארכיון — הם ייצברו ככל שייטענו דוחות</div>
+              ) : (
+                <div style={{ width: "100%", height: 280, direction: "ltr" }}>
+                  <ResponsiveContainer>
+                    <ComposedChart data={qualDaily} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                      <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                      <XAxis dataKey="label" {...axis} />
+                      <YAxis yAxisId="q" {...axis} allowDecimals={false} />
+                      <YAxis yAxisId="cpl" orientation="right" {...axis} tickFormatter={(v) => "₪" + (v >= 1000 ? Math.round(v / 1000) + "K" : Math.round(v))} />
+                      <Tooltip {...tip((v, n) => [n.includes("עלות") ? nis(v) : num(v), n])} />
+                      <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} />
+                      <Bar yAxisId="q" dataKey="q" name="לידים איכותיים" fill={C.teal} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                      <Line yAxisId="cpl" type="monotone" dataKey="cpl" name="עלות לליד איכותי" stroke={C.coral} strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            {chartCard("🎓 תארים · תקציב ולידים איכותיים לפי יום",
+              "עמודות: כמה תקציב מומש בכל יום · קו: כמה לידים איכותיים הגיעו באותו יום",
+              <ComposedChart data={daily} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                <XAxis dataKey="label" {...axis} />
+                <YAxis yAxisId="money" {...axis} tickFormatter={(v) => "₪" + Math.round(v / 1000) + "K"} />
+                <YAxis yAxisId="q" orientation="right" {...axis} allowDecimals={false} />
+                <Tooltip {...tip((v, n) => [n.includes("תקציב") ? nis(v) : num(v), n])} />
+                <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} />
+                <Bar yAxisId="money" dataKey="תקציב יומי" fill={C.amber} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                <Line yAxisId="q" type="monotone" dataKey="איכותיים תארים" name="לידים איכותיים" stroke={C.blue} strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+              </ComposedChart>,
+              has("תקציב יומי") || has("איכותיים תארים") ? null : "אין עדיין נתוני תארים בארכיון"
+            )}
+
+            {chartCard("🏛️ הארווארד · תקציב ולידים איכותיים לפי יום",
+              "עמודות: מימוש יומי של הארווארד · קו: לידים איכותיים שהגיעו באותו יום",
+              <ComposedChart data={daily} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                <XAxis dataKey="label" {...axis} />
+                <YAxis yAxisId="money" {...axis} tickFormatter={(v) => "₪" + (v >= 1000 ? Math.round(v / 1000) + "K" : Math.round(v))} />
+                <YAxis yAxisId="q" orientation="right" {...axis} allowDecimals={false} />
+                <Tooltip {...tip((v, n) => [n.includes("תקציב") ? nis(v) : num(v), n])} />
+                <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} />
+                <Bar yAxisId="money" dataKey="תקציב הארווארד" fill={C.violet} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                <Line yAxisId="q" type="monotone" dataKey="איכותיים הארווארד" name="לידים איכותיים" stroke={C.teal} strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+              </ComposedChart>,
+              has("תקציב הארווארד") || has("איכותיים הארווארד") ? null : "אין עדיין נתוני הארווארד בארכיון"
+            )}
+
+            {chartCard("🌐 אתר · לידים לפי יום",
+              "עמודות: לידים ברוטו שהגיעו מהאתר בכל יום · קו: כמה מהם איכותיים (ללא תקציב — מקור אורגני)",
+              <ComposedChart data={daily} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                <XAxis dataKey="label" {...axis} />
+                <YAxis {...axis} allowDecimals={false} />
+                <Tooltip {...tip((v, n) => [num(v), n])} />
+                <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} />
+                <Bar dataKey="לידים ברוטו אתר" name="לידים ברוטו" fill={C.blue} radius={[4, 4, 0, 0]} maxBarSize={34} />
+                <Line type="monotone" dataKey="איכותיים אתר" name="לידים איכותיים" stroke={C.teal} strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+              </ComposedChart>,
+              has("לידים ברוטו אתר") || has("איכותיים אתר") ? null : "היסטוריית האתר מתחילה להיצבר מעכשיו — אחרי יומיים של משיכות יופיע כאן הגרף"
+            )}
+
+            <div className="foot" style={{ marginTop: 0, marginBottom: 26 }}>
+              "יום" = ההפרש בין דוח לדוח שלפניו בארכיון · עד 31 הימים האחרונים · ימים חסרים בארכיון אפשר להשלים דרך לוח השנה
+            </div>
+          </>
+        );
+      })()}
 
       {/* ---------- ארכיון · לוח שנה ---------- */}
       <div className="panel cal-cta" style={{ marginBottom: 26 }} onClick={() => { refreshDayIndex(); setCalOpen(true); }}>
