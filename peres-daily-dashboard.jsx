@@ -251,7 +251,11 @@ function parseReport(csvText) {
       if (!name) continue;
       if (/^total$|סה"כ|סהכ/i.test(name)) {
         /* שורת ה-Total של הטבלה — מקור האמת ליעד התקציב והמימוש של חוברת התארים */
-        out.totalsRow = { budget: toNum(r[ci.budget]), spent: toNum(r[ci.spent]) };
+        out.totalsRow = {
+          budget: toNum(r[ci.budget]), spent: toNum(r[ci.spent]),
+          gross: toNum(r[ci.gross]), quality: toNum(r[ci.quality]),
+          inProc: toNum(r[ci.inProc]),
+        };
         break;
       }
       const row = {
@@ -1299,8 +1303,54 @@ export default function App() {
         : null;
       return { data: vData, delta: vDelta, label: "הארווארד", isHarvard: true, totalsRow: H.total, noBudget: false };
     }
-    return { data, delta: fullDelta, label: "תארים", isHarvard: false, totalsRow: data.totalsRow || null, noBudget: false };
-  }, [data, fullDelta, board, siteData, siteDelta]);
+    /* חוברת התארים: הבלוק העליון בגיליון מסכם תארים+הארווארד יחד.
+       כאן בונים סיכום תארים-בלבד משורת ה-Total של טבלת ה-BOF (שכבר מנקה את הארווארד),
+       ושומרים את היעדים מהבלוק העליון. */
+    const degSummary = (() => {
+      const base = data.summary;
+      const tr = data.totalsRow;
+      if (!base || !tr || tr.gross == null || tr.quality == null) return base;
+      const gross = tr.gross, quality = tr.quality, spent = tr.spent;
+      /* לידים בתהליך של התארים = סכום עמודת "בתהליך" בטבלת ה-BOF (ללא הארווארד) */
+      const inProc = (data.platforms || []).reduce((a, b) => a + (b.inProc || 0), 0);
+      return {
+        actual: {
+          gross, quality,
+          qualityPct: gross > 0 ? (quality / gross) * 100 : null,
+          cpl: spent != null && gross > 0 ? spent / gross : (base.actual.cpl ?? null),
+          cpql: spent != null && quality > 0 ? spent / quality : (base.actual.cpql ?? null),
+          inProcess: inProc || base.actual.inProcess,
+        },
+        target: base.target,
+      };
+    })();
+    const degData = { ...data, summary: degSummary };
+    /* דלתא תארים-בלבד: משורת ה-Total של ה-BOF מול אותה שורה בדוח הקודם */
+    let degDelta = fullDelta;
+    if (fullDelta && prevSnap && prevSnap.data) {
+      const pd = prevSnap.data;
+      const ptr = pd.totalsRow;
+      if (ptr && ptr.gross != null && data.totalsRow) {
+        const tr = data.totalsRow;
+        const pInProc = (pd.platforms || []).reduce((a, b) => a + (b.inProc || 0), 0);
+        degDelta = {
+          ...fullDelta,
+          summary: {
+            ...fullDelta.summary,
+            gross: (tr.gross ?? 0) - (ptr.gross ?? 0),
+            quality: (tr.quality ?? 0) - (ptr.quality ?? 0),
+            spent: (tr.spent ?? 0) - (ptr.spent ?? 0),
+            inProcess: (degSummary.actual.inProcess ?? 0) - pInProc,
+            qualityPct: (degSummary.actual.qualityPct ?? 0) -
+              ((ptr.gross > 0 ? (ptr.quality / ptr.gross) * 100 : 0)),
+            cpl: (degSummary.actual.cpl ?? 0) - (ptr.spent != null && ptr.gross > 0 ? ptr.spent / ptr.gross : 0),
+            cpql: (degSummary.actual.cpql ?? 0) - (ptr.spent != null && ptr.quality > 0 ? ptr.spent / ptr.quality : 0),
+          },
+        };
+      }
+    }
+    return { data: degData, delta: degDelta, label: "תארים", isHarvard: false, totalsRow: data.totalsRow || null, noBudget: false };
+  }, [data, fullDelta, prevSnap, board, siteData, siteDelta]);
 
   const delta = view.delta;
   const s = view.data.summary;
