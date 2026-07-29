@@ -125,8 +125,74 @@ const heDate = (d) => new Date(d).toLocaleDateString("he-IL", { day: "numeric", 
    כתיבה נשמרת לכל השכבות במקביל — כך הארכיון עובד בכל סביבה. */
 const memStore = {};
 const LS_PREFIX = "peres:";
+/* ================= אחסון ענן (Supabase) — מקור אמת משותף לכל המכשירים =================
+   כל שמירה נכתבת גם לענן וגם מקומית; כל קריאה מנסה קודם את הענן.
+   כך כל דפדפן/מכשיר רואה את אותה היסטוריה. אם אין רשת — עובדים מקומית וממשיכים כרגיל. */
+const CLOUD = {
+  url: "https://ydeahusxyptavxbyemtp.supabase.co",
+  key: "sb_publishable_zSyDYgBupJcKu6cuzB7b_g_0Cc3V-lz",
+  table: "archive",
+};
+const cloudHeaders = () => ({
+  apikey: CLOUD.key,
+  Authorization: "Bearer " + CLOUD.key,
+  "Content-Type": "application/json",
+});
+const cloudFetch = (path, opts = {}) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 12000);
+  return fetch(`${CLOUD.url}/rest/v1/${CLOUD.table}${path}`, { ...opts, headers: { ...cloudHeaders(), ...(opts.headers || {}) }, signal: ctrl.signal })
+    .finally(() => clearTimeout(t));
+};
+const cloud = {
+  enabled: true, /* מכובה אוטומטית אם הענן לא נגיש, כדי לא להאט את האפליקציה */
+  async get(k) {
+    if (!this.enabled) return undefined;
+    try {
+      const res = await cloudFetch(`?key=eq.${encodeURIComponent(k)}&select=value`);
+      if (!res.ok) throw new Error(res.status);
+      const rows = await res.json();
+      return rows.length ? rows[0].value : null;
+    } catch { return undefined; } /* undefined = הענן לא ענה; null = המפתח לא קיים בענן */
+  },
+  async set(k, v) {
+    if (!this.enabled) return false;
+    try {
+      const res = await cloudFetch(`?on_conflict=key`, {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates" },
+        body: JSON.stringify([{ key: k, value: v, updated_at: new Date().toISOString() }]),
+      });
+      return res.ok;
+    } catch { return false; }
+  },
+  async list(prefix) {
+    if (!this.enabled) return undefined;
+    try {
+      const res = await cloudFetch(`?key=like.${encodeURIComponent(prefix + "*")}&select=key`);
+      if (!res.ok) throw new Error(res.status);
+      return (await res.json()).map((r) => r.key);
+    } catch { return undefined; }
+  },
+  async ping() {
+    try {
+      const res = await cloudFetch(`?select=key&limit=1`);
+      this.enabled = res.ok;
+    } catch { this.enabled = false; }
+    return this.enabled;
+  },
+};
+
 const store = {
   async get(k) {
+    /* קודם הענן — מקור האמת המשותף */
+    const c = await cloud.get(k);
+    if (c !== undefined && c !== null) {
+      try { memStore[k] = JSON.stringify(c); localStorage.setItem(LS_PREFIX + k, JSON.stringify(c)); } catch {}
+      return c;
+    }
+    if (c === null) return null; /* הענן ענה שאין מפתח כזה */
+    /* הענן לא זמין — נופלים חזרה למקומי */
     try {
       if (window.storage) {
         const r = await window.storage.get(k);
@@ -142,11 +208,15 @@ const store = {
   async set(k, v) {
     const s = JSON.stringify(v);
     memStore[k] = s;
-    try { if (window.storage) await window.storage.set(k, s); } catch {}
     try { localStorage.setItem(LS_PREFIX + k, s); } catch {}
+    try { if (window.storage) await window.storage.set(k, s); } catch {}
+    await cloud.set(k, v); /* דחיפה לענן — כך כל המכשירים רואים */
   },
   async list(prefix) {
-    const keys = new Set(Object.keys(memStore).filter((k) => k.startsWith(prefix)));
+    const keys = new Set();
+    const c = await cloud.list(prefix);
+    if (c !== undefined) c.forEach((k) => keys.add(k));
+    Object.keys(memStore).filter((k) => k.startsWith(prefix)).forEach((k) => keys.add(k));
     try {
       if (window.storage) {
         const r = await window.storage.list(prefix);
@@ -160,6 +230,24 @@ const store = {
       }
     } catch {}
     return [...keys];
+  },
+  /* דחיפת כל הארכיון המקומי לענן — פעולה חד-פעמית להעברת היסטוריה קיימת */
+  async pushAllToCloud() {
+    const localKeys = new Set();
+    Object.keys(memStore).forEach((k) => localKeys.add(k));
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(LS_PREFIX)) localKeys.add(k.slice(LS_PREFIX.length));
+      }
+    } catch {}
+    let n = 0;
+    for (const k of localKeys) {
+      let v = null;
+      try { const raw = memStore[k] ?? localStorage.getItem(LS_PREFIX + k); if (raw != null) v = JSON.parse(raw); } catch {}
+      if (v !== null) { if (await cloud.set(k, v)) n++; }
+    }
+    return n;
   },
 };
 
@@ -871,6 +959,8 @@ export default function App() {
   const [dayIndex, setDayIndex] = useState([]);          /* תאריכים שיש להם דוח שמור */
   const [trendData, setTrendData] = useState([]);        /* סדרת מגמה יומית לטאב "מבט על" */
   const [qualSel, setQualSel] = useState("__all__");      /* בחירת קמפיין בגרף האיכות של מבט-על */
+  const [cloudUp, setCloudUp] = useState(false);          /* האם אחסון הענן זמין */
+  const [cloudBusy, setCloudBusy] = useState(false);
   const [viewingDay, setViewingDay] = useState(null);    /* צפייה בדוח היסטורי */
   const [calPaste, setCalPaste] = useState(null);        /* {date} — הזנת דוח ליום ספציפי */
   const [calPasteText, setCalPasteText] = useState("");
@@ -946,6 +1036,9 @@ export default function App() {
   /* טעינת תמונת מצב — קודם מקישור משותף (hash), אחר כך מהאחסון */
   useEffect(() => {
     (async () => {
+      /* בדיקת זמינות הענן — קובעת אם קוראים/כותבים אליו */
+      const cloudOk = await cloud.ping();
+      setCloudUp(cloudOk);
       /* קישור משותף? */
       try {
         const hash = (window.location.hash || "").replace(/^#/, "");
@@ -1584,6 +1677,9 @@ export default function App() {
         .cal-cta { display:flex; align-items:center; justify-content:space-between; gap:14px; cursor:pointer; transition:border-color .15s; }
         .cal-cta:hover { border-color:${C.amber}; }
         .cal-cta-arrow { color:${C.amber}; font-size:20px; }
+        .cloud-pill { font-size:11.5px; font-weight:700; border-radius:8px; padding:5px 10px; border:1px solid ${C.line}; }
+        .cloud-pill.up { color:${C.teal}; border-color:rgba(55,201,169,.45); background:rgba(55,201,169,.1); }
+        .cloud-pill.down { color:${C.amber}; border-color:rgba(245,184,65,.4); background:rgba(245,184,65,.1); }
         .cal-overlay { position:fixed; inset:0; background:rgba(5,10,20,.85); backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center; z-index:150; padding:14px; }
         .cal-sheet { background:${C.panel}; border:1px solid ${C.line}; border-radius:18px; padding:18px; width:min(1060px, 96vw); max-height:92vh; overflow-y:auto; box-shadow:0 30px 80px rgba(0,0,0,.6); }
         .cal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
@@ -2299,7 +2395,19 @@ export default function App() {
                 <button className="btn ghost" onClick={() => setCalYear((y) => y + 1)}>{calYear + 1} ◀</button>
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <button className="btn ghost" onClick={exportArchive} title="הורדת כל הארכיון כקובץ — לסנכרון לדפדפן/מחשב אחר">⬇️ גיבוי</button>
+                <span className={`cloud-pill ${cloudUp ? "up" : "down"}`} title={cloudUp ? "מחובר לאחסון ענן — כל המכשירים חולקים את אותה היסטוריה" : "אחסון ענן לא זמין — עובד מקומית"}>
+                  {cloudUp ? "☁️ ענן מחובר" : "⚠️ ענן מנותק"}
+                </span>
+                <button className="btn ghost" disabled={!cloudUp || cloudBusy} onClick={async () => {
+                  setCloudBusy(true);
+                  const n = await store.pushAllToCloud();
+                  await refreshDayIndex(); await refreshTrend();
+                  setCloudBusy(false);
+                  setStatus({ kind: "ok", msg: `הועלו ${n} רשומות לענן — ההיסטוריה הקיימת זמינה עכשיו לכל המכשירים` });
+                }} title="דחיפת כל הארכיון המקומי לענן — פעולה חד-פעמית להעברת היסטוריה קיימת">
+                  {cloudBusy ? "⏳ מעלה…" : "☁️⬆️ העלאה לענן"}
+                </button>
+                <button className="btn ghost" onClick={exportArchive} title="הורדת כל הארכיון כקובץ — גיבוי מקומי">⬇️ גיבוי</button>
                 <label className="btn ghost file-btn" title="ייבוא קובץ גיבוי שהורד בדפדפן אחר">
                   ⬆️ ייבוא
                   <input type="file" accept=".json,application/json" onChange={importArchive} />
@@ -2317,7 +2425,7 @@ export default function App() {
             <div className="cal-legend">
               <span><span className="cal-dot has" /> יש דוח שמור — לחיצה פותחת אותו</span>
               <span><span className="cal-dot" /> אין דוח — לחיצה מאפשרת להזין דוח לאותו יום</span>
-              <span>💾 הארכיון נשמר מקומית בדפדפן — לסנכרון לדפדפן אחר: גיבוי כאן ← ייבוא שם</span>
+              <span>{cloudUp ? "☁️ הארכיון מסונכרן בענן — כל המכשירים רואים את אותה היסטוריה אוטומטית" : "💾 הענן לא זמין כרגע — עובד מקומית; לסנכרון ידני: גיבוי כאן ← ייבוא שם"}</span>
             </div>
             <div className="cal-months">
               {Array.from({ length: 12 }, (_, mi) => {
