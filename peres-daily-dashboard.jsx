@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  ComposedChart, Line, Legend,
+  ComposedChart, Line, Legend, ReferenceLine,
 } from "recharts";
 
 /* ------------------------------------------------------------------ */
@@ -444,6 +444,80 @@ function parseReport(csvText) {
 
 export { parseReport };
 
+/* פרסר לגיליון ה-YoY: שורה per ליד עם תאריך / מקור / איכות.
+   מחזיר מפה: { "MM-DD": {digital, site} } של תקינים יומיים, מקובצת לפי יום-בשנה. */
+function parseYoY(csvText) {
+  const rows = Papa.parse(csvText).data;
+  if (!rows.length) return null;
+  /* איתור שורת הכותרת ועמודות */
+  let hdrIdx = -1, ci = {};
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const cells = rows[i].map((c) => String(c || "").trim());
+    const dCol = cells.findIndex((c) => c.includes("תאריך"));
+    const qCol = cells.findIndex((c) => c === "איכות" || c.includes("איכות"));
+    if (dCol !== -1 && qCol !== -1) {
+      hdrIdx = i;
+      ci = { date: dCol, source: cells.findIndex((c) => c.includes("מקור")), quality: qCol };
+      break;
+    }
+  }
+  if (hdrIdx === -1) return null;
+  const byYear = {}; /* { 2025: { "09-25": {digital, site, total} } } */
+  const parseDate = (s) => {
+    const m = String(s).trim().match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
+    if (!m) return null;
+    let [, d, mo, y] = m; y = y.length === 2 ? "20" + y : y;
+    return { y: +y, mo: +mo, d: +d, mmdd: `${String(+mo).padStart(2, "0")}-${String(+d).padStart(2, "0")}` };
+  };
+  for (let i = hdrIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const q = String(r[ci.quality] || "").trim();
+    if (q !== "תקין") continue; /* רק תקינים */
+    const dt = parseDate(r[ci.date]);
+    if (!dt) continue;
+    const src = String(ci.source !== -1 ? r[ci.source] : "").trim();
+    const isSite = src.includes("אתר") || /site|website/i.test(src);
+    byYear[dt.y] = byYear[dt.y] || {};
+    const bucket = byYear[dt.y][dt.mmdd] || { digital: 0, site: 0, total: 0 };
+    if (isSite) bucket.site++; else bucket.digital++;
+    bucket.total++;
+    byYear[dt.y][dt.mmdd] = bucket;
+  }
+  return byYear;
+}
+export { parseYoY };
+
+/* חגים עבריים לחודש גרגוריאני נתון — מזוהים דרך לוח השנה העברי של הדפדפן.
+   מחזיר [{day, label}] לימים שהם חג/ערב חג באותו חודש. */
+function hebrewHolidaysForMonth(gy, gm) {
+  const out = [];
+  try {
+    const fmt = new Intl.DateTimeFormat("en-u-ca-hebrew", { day: "numeric", month: "long" });
+    const daysInM = new Date(gy, gm, 0).getDate();
+    /* מיפוי אירועים עבריים מרכזיים לפי (חודש עברי, יום עברי). ערב חג = היום שלפני */
+    const HEB = {
+      "Tishri-1": "ראש השנה", "Tishri-10": "יום כיפור", "Tishri-15": "סוכות",
+      "Tishri-22": "שמחת תורה", "Nisan-15": "פסח", "Nisan-21": "שביעי של פסח",
+      "Sivan-6": "שבועות", "Shevat-15": 'ט"ו בשבט', "Adar-14": "פורים", "Kislev-25": "חנוכה",
+      "Iyar-5": "יום העצמאות", "Iyar-4": "יום הזיכרון", "Av-9": "תשעה באב",
+    };
+    let prevLabel = null;
+    for (let d = 1; d <= daysInM; d++) {
+      const parts = fmt.formatToParts(new Date(gy, gm - 1, d));
+      const hMonth = parts.find((p) => p.type === "month")?.value.replace(/\s/g, "");
+      const hDay = parts.find((p) => p.type === "day")?.value;
+      const key = `${hMonth}-${hDay}`;
+      if (HEB[key]) out.push({ day: d, label: HEB[key] });
+    }
+    /* הוספת "ערב" ליום שלפני חג מרכזי אם הוא באותו חודש */
+    const majors = new Set(["ראש השנה", "יום כיפור", "סוכות", "פסח", "שבועות"]);
+    const withEves = [];
+    out.forEach((h) => { if (majors.has(h.label) && h.day > 1) withEves.push({ day: h.day - 1, label: "ערב " + h.label }); });
+    return [...out, ...withEves].sort((a, b) => a.day - b.day);
+  } catch { return out; }
+}
+export { hebrewHolidaysForMonth };
+
 /* מהקישור נגזרים כמה מסלולי גישה — מנסים אותם לפי הסדר עד שאחד מצליח */
 function toCsvUrls(link) {
   const m = String(link).match(/\/d\/(?:e\/)?([\w-]+)/);
@@ -549,13 +623,19 @@ function reportTotals(rep) {
   if (!rep) return null;
   const budgetTarget = (rep.totalsRow && rep.totalsRow.budget) || (rep.platforms || []).reduce((a, b) => a + (b.budget || 0), 0);
   const spent = (rep.totalsRow && rep.totalsRow.spent) || (rep.platforms || []).reduce((a, b) => a + (b.spent || 0), 0);
-  const degQuality = rep.summary && rep.summary.actual ? (rep.summary.actual.quality || 0) : 0;
+  /* איכותיים · תארים בלבד — משורת ה-Total של ה-BOF (ללא הארווארד). אם אין, נגזור מהבלוק המשולב פחות הארווארד */
   const harvardQuality = rep.harvard
     ? ((rep.harvard.total && rep.harvard.total.quality) ?? (rep.harvard.platforms || []).reduce((a, b) => a + (b.quality || 0), 0))
     : null;
   const harvardSpent = rep.harvard
     ? ((rep.harvard.total && rep.harvard.total.spent) ?? (rep.harvard.platforms || []).reduce((a, b) => a + (b.spent || 0), 0))
     : null;
+  let degQuality;
+  if (rep.totalsRow && rep.totalsRow.quality != null) degQuality = rep.totalsRow.quality;
+  else {
+    const combined = rep.summary && rep.summary.actual ? (rep.summary.actual.quality || 0) : 0;
+    degQuality = combined - (harvardQuality || 0);
+  }
   const cpqlTotal = rep.summary && rep.summary.actual ? rep.summary.actual.cpql : null;
   return { budgetTarget, spent, degQuality, harvardQuality, harvardSpent, cpqlTotal };
 }
@@ -961,6 +1041,13 @@ export default function App() {
   const [qualSel, setQualSel] = useState("__all__");      /* בחירת קמפיין בגרף האיכות של מבט-על */
   const [cloudUp, setCloudUp] = useState(false);          /* האם אחסון הענן זמין */
   const [cloudBusy, setCloudBusy] = useState(false);
+  const [yoyData, setYoyData] = useState(null);           /* { year: { "MM-DD": {digital,site,total} } } */
+  const [yoyLink, setYoyLink] = useState("");             /* קישור גיליון ה-YoY ההיסטורי */
+  const [yoyUpdatedAt, setYoyUpdatedAt] = useState(null);
+  const [overviewTab, setOverviewTab] = useState("trends"); /* trends | yoy — תת-ניווט בתוך "מבט על" */
+  const [userEvents, setUserEvents] = useState([]);       /* אירועים ידניים לציר ה-YoY */
+  const [evName, setEvName] = useState("");
+  const [evDay, setEvDay] = useState("");
   const [viewingDay, setViewingDay] = useState(null);    /* צפייה בדוח היסטורי */
   const [calPaste, setCalPaste] = useState(null);        /* {date} — הזנת דוח ליום ספציפי */
   const [calPasteText, setCalPasteText] = useState("");
@@ -1063,6 +1150,12 @@ export default function App() {
       if (siteLatest && siteLatest.data) { setSiteData(siteLatest.data); setSiteUpdatedAt(new Date(siteLatest.savedAt)); }
       const siteP = await store.get("peres:site:previous");
       if (siteP) setSitePrev(siteP);
+      const yoyLinkSaved = await store.get("peres:yoy:link");
+      if (yoyLinkSaved) setYoyLink(yoyLinkSaved);
+      const yoySaved = await store.get("peres:yoy:data");
+      if (yoySaved && yoySaved.byYear) { setYoyData(yoySaved.byYear); setYoyUpdatedAt(new Date(yoySaved.savedAt)); }
+      const evSaved = await store.get("peres:events");
+      if (Array.isArray(evSaved)) setUserEvents(evSaved);
       const savedAuto = await store.get("peres:autosync");
       if (savedAuto) setAutoSync(true);
       if (savedAuto && savedLink) setPendingAutoFetch(savedLink);
@@ -1293,6 +1386,61 @@ export default function App() {
     if (!silent) setStatus({ kind: "err", msg: "לא הצלחתי למשוך את חוברת האתר. שימו לב: זו חוברת נפרדת עם הרשאות משלה — השיתוף של חוברת התארים לא חל עליה. בחוברת האתר: שיתוף ← גישה כללית ← כל מי שיש לו את הקישור ← צפייה, ואז נסו שוב. (לחלופין: קובץ ← שיתוף ← פרסום באינטרנט ← בחרו את לשונית האתר + CSV, והדביקו את הקישור שנוצר בשדה חוברת האתר.)" });
   }, [loadSiteCsv, refreshTrend]);
 
+  /* ---------- YoY: משיכת גיליון ההשוואה ההיסטורי (2025) ---------- */
+  const loadYoYCsv = useCallback(async (text) => {
+    const parsed = parseYoY(text);
+    if (!parsed || !Object.keys(parsed).length) {
+      setStatus({ kind: "err", msg: "לא זוהו נתוני YoY — ודאו שהגיליון מכיל עמודות תאריך / מקור / איכות" });
+      return false;
+    }
+    const now = new Date().toISOString();
+    await store.set("peres:yoy:data", { savedAt: now, byYear: parsed });
+    setYoyData(parsed);
+    setYoyUpdatedAt(new Date(now));
+    return true;
+  }, []);
+
+  const fetchYoY = useCallback(async (theLink, silent = false) => {
+    const urls = toCsvUrls(theLink);
+    if (!urls.length) { if (!silent) setStatus({ kind: "err", msg: "קישור גיליון ה-YoY לא זוהה כקישור Google Sheets תקין" }); return; }
+    if (!silent) setStatus({ kind: "load", msg: "טוען את גיליון ה-YoY…" });
+    for (const url of urls) {
+      try {
+        const res = await fetchWithTimeout(url, 15000);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const txt = await res.text();
+        if (/^\s*</.test(txt)) throw new Error("not-csv");
+        const ok = await loadYoYCsv(txt);
+        if (ok) { await store.set("peres:yoy:link", theLink); if (!silent) setStatus({ kind: "ok", msg: "גיליון ה-YoY נטען ונשמר" }); }
+        return;
+      } catch { /* מסלול הבא */ }
+    }
+    /* fallback: משיכת החוברת כ-XLSX ואיתור לשונית ה-YoY */
+    const m = String(theLink).match(/\/d\/([\w-]+)/);
+    if (m && !theLink.includes("/d/e/")) {
+      try {
+        const res = await fetchWithTimeout(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`, 25000);
+        if (res.ok) {
+          const wb = XLSX.read(await res.arrayBuffer(), { type: "array" });
+          let chosen = null;
+          for (const name of wb.SheetNames) {
+            const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
+            if (csv.includes("תאריך") && csv.includes("איכות")) { chosen = csv; if (/yoy/i.test(name)) break; }
+          }
+          if (chosen && await loadYoYCsv(chosen)) {
+            await store.set("peres:yoy:link", theLink);
+            if (!silent) setStatus({ kind: "ok", msg: "גיליון ה-YoY נטען — הלשונית אותרה אוטומטית" });
+            return;
+          }
+        }
+      } catch {}
+    }
+    if (!silent) setStatus({ kind: "err", msg: "לא הצלחתי למשוך את גיליון ה-YoY — ודאו שהוא משותף לצפייה או מפורסם כ-CSV" });
+  }, [loadYoYCsv]);
+
+  const fetchYoYRef = React.useRef(null);
+  fetchYoYRef.current = fetchYoY;
+
   const fetchSiteRef = React.useRef(null);
   fetchSiteRef.current = fetchSite;
 
@@ -1308,11 +1456,12 @@ export default function App() {
       await store.set("peres:lastAutoSyncDay", today);
       if (fetchFromLinkRef.current) fetchFromLinkRef.current(link, true);
       if (fetchSiteRef.current && siteLink) fetchSiteRef.current(siteLink, true);
+      if (fetchYoYRef.current && yoyLink) fetchYoYRef.current(yoyLink, true);
     };
     tick();
     const id = setInterval(tick, 60000);
     return () => clearInterval(id);
-  }, [autoSync, link, siteLink]);
+  }, [autoSync, link, siteLink, yoyLink]);
 
   /* סנכרון אוטומטי בפתיחה — רץ פעם אחת כשיש קישור שמור והאפשרות מופעלת */
   useEffect(() => {
@@ -1321,8 +1470,9 @@ export default function App() {
       setPendingAutoFetch(null);
       fetchFromLinkRef.current(l, true);
       if (fetchSiteRef.current && siteLink) fetchSiteRef.current(siteLink, true);
+      if (fetchYoYRef.current && yoyLink) fetchYoYRef.current(yoyLink, true);
     }
-  }, [pendingAutoFetch, siteLink]);
+  }, [pendingAutoFetch, siteLink, yoyLink]);
 
   const fetchFromLink = useCallback(async (theLink, silent = false) => {
     const urls = toCsvUrls(theLink);
@@ -1593,6 +1743,9 @@ export default function App() {
         .tab.on { background:${C.panelSoft}; color:${C.amber}; border-color:${C.amber}; }
         .tab:hover:not(.on) { color:${C.text}; }
         .tab-meta { color:${C.dim}; font-size:12px; margin-right:8px; }
+        .subtab { background:transparent; border:1px solid ${C.line}; color:${C.dim}; border-radius:20px; padding:6px 18px; font-family:inherit; font-size:13px; font-weight:700; cursor:pointer; }
+        .subtab.on { background:rgba(245,184,65,.12); color:${C.amber}; border-color:${C.amber}; }
+        .subtab:hover:not(.on) { color:${C.text}; }
         .status { font-size:13px; padding:8px 14px; border-radius:10px; margin:14px 0 20px; border:1px solid ${C.line}; background:${C.panel}; color:${C.dim}; }
         .status.err { border-color:${C.coral}; color:${C.coral}; }
         .status.ok { border-color:${C.teal}; color:${C.teal}; }
@@ -1717,7 +1870,7 @@ export default function App() {
       {/* ---------- כותרת ---------- */}
       <div className="head">
         <div>
-          <h1>המרכז האקדמי פרס · <span>{view.isHarvard ? "הארווארד" : board === "site" ? "אתר" : board === "summary" ? "מבט על" : "דשבורד יומי"}</span></h1>
+          <h1>המרכז האקדמי פרס · <span>{view.isHarvard ? "הארווארד" : board === "site" ? "אתר" : board === "summary" ? (overviewTab === "yoy" ? "השוואת שנים" : "מבט על") : "דשבורד יומי"}</span></h1>
           <div className="sub">
             {board === "site"
               ? (siteUpdatedAt ? `חוברת האתר עודכנה: ${heDate(siteUpdatedAt)}` : "חוברת האתר — טרם נטענה")
@@ -1796,6 +1949,11 @@ export default function App() {
             <strong style={{ fontSize: 13 }}>🌐 קישור חוברת האתר (אופציונלי)</strong>
             <input placeholder="https://docs.google.com/spreadsheets/d/... (חוברת האתר)" value={siteLink} onChange={(e) => setSiteLink(e.target.value)} />
             <button className="btn ghost" onClick={() => fetchSite(siteLink)}>טעינת חוברת האתר</button>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <strong style={{ fontSize: 13 }}>📅 קישור גיליון YoY · השוואת שנים (אופציונלי)</strong>
+            <input placeholder="https://docs.google.com/spreadsheets/d/... (גיליון YoY — תאריך/מקור/איכות)" value={yoyLink} onChange={(e) => setYoyLink(e.target.value)} />
+            <button className="btn ghost" onClick={() => fetchYoY(yoyLink)}>טעינת גיליון YoY</button>
           </div>
           <label className="autosync">
             <input type="checkbox" checked={autoSync} onChange={async (e) => {
@@ -2177,7 +2335,14 @@ export default function App() {
       </>)}
 
       {/* ---------- סיכום נתונים · מגמות ---------- */}
-      {board === "summary" && (() => {
+      {board === "summary" && (
+        <div className="board-tabs" style={{ marginBottom: 16, marginTop: -6 }}>
+          <button className={`subtab ${overviewTab === "trends" ? "on" : ""}`} onClick={() => { refreshTrend(); setOverviewTab("trends"); }}>מגמות</button>
+          <button className={`subtab ${overviewTab === "yoy" ? "on" : ""}`} onClick={() => setOverviewTab("yoy")}>השוואת שנים · YoY</button>
+        </div>
+      )}
+
+      {board === "summary" && overviewTab === "trends" && (() => {
         const t = trendData;
         const isDemo = t.length < 2;
         const latest = isDemo
@@ -2235,16 +2400,19 @@ export default function App() {
           }
           return out;
         })();
+        /* התקציב במבט-על = תארים + הארווארד ביחד (שניהם בתשלום) */
         const paidSpent = (latest.spent || 0) + (latest.harvardSpent || 0);
+        const paidBudget = (latest.budgetTarget || 0) + (isDemo ? 40000 : 0); /* הארווארד יעד ~40K בדמו */
         const totalQ = (latest.degQuality || 0) + (latest.harvardQuality || 0) + (latestSite.siteQuality || 0);
         const range = isDemo ? `${DEMO_TREND[0].label} – ${DEMO_TREND[DEMO_TREND.length - 1].label}` : (t.length ? `${t[0].label} – ${t[t.length - 1].label}` : "");
         const overviewCards = [
-          { title: "תקציב כולל (תארים)", val: nis(latest.spent ?? 0), sub: latest.budgetTarget ? `מתוך ${nis(latest.budgetTarget)} · ${Math.round(((latest.spent || 0) / latest.budgetTarget) * 100)}%` : "", color: C.amber },
+          { title: "תקציב כולל (תארים + הארווארד)", val: nis(paidSpent), sub: paidBudget ? `מתוך ${nis(paidBudget)} · ${Math.round((paidSpent / paidBudget) * 100)}%` : "", color: C.amber },
+          { title: "לידים איכותיים · טוטאל", val: num(totalQ), sub: "תארים + הארווארד + אתר", color: C.teal },
+          { title: "עלות לליד איכותי · טוטאל", val: totalQ > 0 && paidSpent > 0 ? nis(paidSpent / totalQ) : (latest.cpqlTotal ? nis(latest.cpqlTotal) : "—"),
+            sub: totalQ > 0 && paidSpent > 0 ? `${nis(paidSpent)} ÷ ${num(totalQ)} איכותיים (כולל אתר)` : "", color: C.coral },
           { title: "לידים איכותיים · תארים", val: num(latest.degQuality ?? 0), color: C.blue },
           { title: "לידים איכותיים · הארווארד", val: latest.harvardQuality !== null && latest.harvardQuality !== undefined ? num(latest.harvardQuality) : "—", color: C.violet },
           { title: "לידים איכותיים · אתר", val: latestSite.siteQuality !== null && latestSite.siteQuality !== undefined ? num(latestSite.siteQuality) : "—", color: C.teal },
-          { title: "עלות לליד איכותי · טוטאל", val: totalQ > 0 && paidSpent > 0 ? nis(paidSpent / totalQ) : (latest.cpqlTotal ? nis(latest.cpqlTotal) : "—"),
-            sub: totalQ > 0 && paidSpent > 0 ? `${nis(paidSpent)} ÷ ${num(totalQ)} איכותיים (כולל אתר)` : "", color: C.coral },
         ];
         const tip = (fmt) => ({
           contentStyle: { background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text },
@@ -2361,6 +2529,145 @@ export default function App() {
             <div className="foot" style={{ marginTop: 0, marginBottom: 26 }}>
               "יום" = ההפרש בין דוח לדוח שלפניו בארכיון · עד 31 הימים האחרונים · ימים חסרים בארכיון אפשר להשלים דרך לוח השנה
             </div>
+          </>
+        );
+      })()}
+
+      {/* ---------- YoY · השוואת שנים (תת-ניווט בתוך "מבט על") ---------- */}
+      {board === "summary" && overviewTab === "yoy" && (() => {
+        const now = new Date();
+        const y = now.getFullYear(), prevY = y - 1;
+        const mo = now.getMonth() + 1, dayOfMonth = now.getDate();
+        const mm = String(mo).padStart(2, "0");
+        const heMonth = now.toLocaleDateString("he-IL", { month: "long" });
+        const cur = view; /* לא רלוונטי — נשתמש בטוטאל מהנתונים החיים */
+
+        /* --- נקודת השנה הנוכחית: סך תקינים (תארים+הארווארד+אתר) מ-1 לחודש עד היום --- */
+        const curTotals = (() => {
+          const t = reportTotals(data);
+          const degQ = t ? t.degQuality : 0;
+          const harvQ = t && t.harvardQuality != null ? t.harvardQuality : 0;
+          const siteQ = siteData && siteData.summary ? (siteData.summary.actual.quality || 0) : 0;
+          return { digital: degQ + harvQ, site: siteQ, total: degQ + harvQ + siteQ };
+        })();
+
+        const hasHist = yoyData && yoyData[prevY];
+        /* --- בניית סדרה יומית מצטברת עבור טווח 1..dayOfMonth בחודש הנוכחי --- */
+        const buildCum = (yearMap) => {
+          if (!yearMap) return null;
+          const out = []; let cD = 0, cS = 0, cT = 0;
+          for (let d = 1; d <= new Date(y, mo, 0).getDate(); d++) {
+            const key = `${mm}-${String(d).padStart(2, "0")}`;
+            const b = yearMap[key];
+            if (b) { cD += b.digital; cS += b.site; cT += b.total; }
+            out.push({ day: d, digital: cD, site: cS, total: cT });
+          }
+          return out;
+        };
+        const histCum = hasHist ? buildCum(yoyData[prevY]) : null;
+        /* נקודת אשתקד עד אותו יום-בחודש */
+        const histAtDay = histCum ? (histCum[Math.min(dayOfMonth, histCum.length) - 1] || { total: 0, digital: 0, site: 0 }) : null;
+
+        /* --- גרף: קו אשתקד (מצטבר יומי) מול נקודת השנה הנוכחית --- */
+        const chartData = histCum ? histCum.map((r) => ({
+          day: String(r.day).padStart(2, "0"),
+          [`${prevY}`]: r.total,
+          [`${y}`]: r.day === dayOfMonth ? curTotals.total : null,
+        })) : [];
+
+        /* --- אנוטציות חגים (עברי אוטומטי + ידני) --- */
+        const holidays = hebrewHolidaysForMonth(y, mo).concat(userEvents.filter((e) => {
+          const dt = e.date && e.date.match(/^\d{4}-(\d{2})-\d{2}$/);
+          return dt && +dt[1] === mo;
+        }).map((e) => ({ day: +e.date.split("-")[2], label: e.label, user: true })));
+
+        const yoyDiff = histAtDay && histAtDay.total > 0 ? Math.round(((curTotals.total - histAtDay.total) / histAtDay.total) * 100) : null;
+        const tip = (fmt) => ({
+          contentStyle: { background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text },
+          labelStyle: { color: C.text, fontWeight: 700 }, itemStyle: { color: C.text }, formatter: fmt,
+        });
+        const axis = { tick: { fill: C.dim, fontSize: 11 }, stroke: C.line };
+
+        return (
+          <>
+            {!hasHist && (
+              <div className="panel" style={{ marginBottom: 20 }}>
+                <h2>📅 השוואת שנים · YoY</h2>
+                <div className="hint" style={{ marginBottom: 10 }}>
+                  טרם נטענו נתוני {prevY}. הזינו את קישור גיליון ה-YoY בחלון "חיבור הגיליון" — טבלה עם עמודות תאריך / מקור / איכות. המשיכה תתעדכן אוטומטית כמו שאר החוברות.
+                </div>
+                <button className="btn" onClick={() => fetchYoY(yoyLink)} disabled={!yoyLink}>משיכת גיליון YoY עכשיו</button>
+              </div>
+            )}
+            {hasHist && (
+              <>
+                <div className="grid-kpi" style={{ marginBottom: 20 }}>
+                  <div className="kpi">
+                    <div className="kpi-title">לידים איכותיים · {heMonth} {y} (עד {dayOfMonth}.{mo})</div>
+                    <div className="kpi-value" style={{ color: C.teal }}>{num(curTotals.total)}</div>
+                    <div className="kpi-target">דיגיטל {num(curTotals.digital)} · אתר {num(curTotals.site)}</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="kpi-title">אשתקד · {heMonth} {prevY} (עד {dayOfMonth}.{mo})</div>
+                    <div className="kpi-value" style={{ color: C.dim }}>{num(histAtDay.total)}</div>
+                    <div className="kpi-target">דיגיטל {num(histAtDay.digital)} · אתר {num(histAtDay.site)}</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="kpi-title">שינוי שנתי (YoY)</div>
+                    <div className="kpi-value" style={{ color: yoyDiff == null ? C.text : yoyDiff >= 0 ? C.teal : C.coral }}>
+                      {yoyDiff == null ? "—" : (yoyDiff >= 0 ? "+" : "") + yoyDiff + "%"}
+                    </div>
+                    <div className="kpi-target">{yoyDiff == null ? "" : `${curTotals.total - histAtDay.total >= 0 ? "+" : ""}${num(curTotals.total - histAtDay.total)} לידים מול אשתקד`}</div>
+                  </div>
+                </div>
+
+                <div className="panel" style={{ marginBottom: 18 }}>
+                  <h2>📅 מצטבר {heMonth}: {y} מול {prevY}</h2>
+                  <div className="hint">
+                    קו {prevY} = לידים איכותיים מצטברים לאורך {heMonth} אשתקד · הנקודה של {y} = המצב הנוכחי עד {dayOfMonth}.{mo}
+                    {holidays.length ? " · קווים מקווקווים = חגים/אירועים" : ""}
+                  </div>
+                  <div style={{ width: "100%", height: 320, direction: "ltr" }}>
+                    <ResponsiveContainer>
+                      <ComposedChart data={chartData} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                        <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                        <XAxis dataKey="day" {...axis} />
+                        <YAxis {...axis} allowDecimals={false} />
+                        <Tooltip {...tip((v, n) => [v == null ? "—" : num(v), n])} />
+                        <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} />
+                        {holidays.map((h, i) => (
+                          <ReferenceLine key={i} x={String(h.day).padStart(2, "0")}
+                            stroke={h.user ? C.amber : C.violet} strokeDasharray="4 3"
+                            label={{ value: h.label, fill: h.user ? C.amber : C.violet, fontSize: 10, angle: -90, position: "insideTopRight" }} />
+                        ))}
+                        <Line type="monotone" dataKey={`${prevY}`} name={`${prevY} (אשתקד)`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
+                        <Line type="monotone" dataKey={`${y}`} name={`${y} (השנה)`} stroke={C.teal} strokeWidth={3} dot={{ r: 5 }} connectNulls />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={{ color: C.dim, fontSize: 12, marginTop: 10 }}>
+                    ההשוואה היא "תפוח לתפוח" — אותו חלון ימים בשני החודשים (1–{dayOfMonth}). {yoyUpdatedAt ? `נתוני ${prevY} עודכנו: ${heDate(yoyUpdatedAt)}` : ""}
+                  </div>
+                  <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <input className="qual-select" style={{ maxWidth: 160 }} placeholder="שם אירוע" value={evName} onChange={(e) => setEvName(e.target.value)} />
+                    <input className="qual-select" type="number" min="1" max="31" style={{ maxWidth: 90 }} placeholder="יום" value={evDay} onChange={(e) => setEvDay(e.target.value)} />
+                    <button className="btn ghost" onClick={async () => {
+                      if (!evName || !evDay) return;
+                      const iso = `${y}-${mm}-${String(+evDay).padStart(2, "0")}`;
+                      const next = [...userEvents, { date: iso, label: evName }];
+                      setUserEvents(next); await store.set("peres:events", next);
+                      setEvName(""); setEvDay("");
+                    }}>➕ הוספת אירוע לציר</button>
+                    {userEvents.filter((e) => e.date && +e.date.split("-")[1] === mo).map((e, i) => (
+                      <span key={i} className="tag" style={{ cursor: "pointer" }} title="לחצו להסרה"
+                        onClick={async () => { const next = userEvents.filter((x) => x !== e); setUserEvents(next); await store.set("peres:events", next); }}>
+                        {e.label} ({e.date.split("-")[2]}.{mo}) ✕
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </>
         );
       })()}
