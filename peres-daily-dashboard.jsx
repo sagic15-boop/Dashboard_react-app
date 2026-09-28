@@ -1045,6 +1045,7 @@ export default function App() {
   const [yoyLink, setYoyLink] = useState("");             /* קישור גיליון ה-YoY ההיסטורי */
   const [yoyUpdatedAt, setYoyUpdatedAt] = useState(null);
   const [overviewTab, setOverviewTab] = useState("trends"); /* trends | yoy — תת-ניווט בתוך "מבט על" */
+  const [curDaily, setCurDaily] = useState(null);         /* {day: total} — לידים איכותיים יומיים של השנה, מהארכיון */
   const [userEvents, setUserEvents] = useState([]);       /* אירועים ידניים לציר ה-YoY */
   const [evName, setEvName] = useState("");
   const [evDay, setEvDay] = useState("");
@@ -1513,6 +1514,41 @@ export default function App() {
   const fullDelta = useMemo(() => computeDelta(data, prevSnap), [data, prevSnap]);
 
   const siteDelta = useMemo(() => (siteData ? computeDelta(siteData, sitePrev) : null), [siteData, sitePrev]);
+
+  /* סדרת "לידים איכותיים יומיים של השנה" מהארכיון: תקינים(יום) = מצטבר(יום) − מצטבר(יום קודם).
+     תקינים מצטברים ליום = תארים(שורת Total ב-BOF) + הארווארד + אתר. */
+  useEffect(() => {
+    if (!(board === "summary" && overviewTab === "yoy")) return;
+    (async () => {
+      const rd = new Date(); rd.setDate(rd.getDate() - 1);
+      const y = rd.getFullYear(), mo = rd.getMonth() + 1, mm = String(mo).padStart(2, "0");
+      const daysInM = new Date(y, mo, 0).getDate();
+      const cumOfDay = async (iso) => {
+        const main = await store.get(dayKey(iso));
+        const site = await store.get("peres:siteday:" + iso);
+        if (!main && !site) return null;
+        let total = 0;
+        if (main && main.data) { const rt = reportTotals(main.data); if (rt) total += (rt.degQuality || 0) + (rt.harvardQuality || 0); }
+        if (site && site.data && site.data.summary) total += (site.data.summary.actual.quality || 0);
+        return total;
+      };
+      const cumByDay = {};
+      for (let d = 1; d <= daysInM; d++) {
+        const iso = `${y}-${mm}-${String(d).padStart(2, "0")}`;
+        cumByDay[d] = await cumOfDay(iso);
+      }
+      /* המרה למצטבר רציף (מילוי חורים ע"י הערך האחרון הידוע) ואז לגזירת היומי */
+      const daily = {}; let lastCum = null, prevCum = 0;
+      for (let d = 1; d <= daysInM; d++) {
+        const c = cumByDay[d];
+        if (c == null) { daily[d] = null; continue; }
+        if (lastCum == null) { daily[d] = null; prevCum = c; lastCum = c; continue; } /* היום הראשון בארכיון — אין ממה לגזור */
+        daily[d] = Math.max(c - lastCum, 0);
+        lastCum = c;
+      }
+      setCurDaily(daily);
+    })();
+  }, [board, overviewTab, updatedAt, siteUpdatedAt, dayIndex]);
 
   /* ה"חוברת" הפעילה: תארים / הארווארד / אתר — לכל אחת נתונים, דלתות, תובנות וסטורי משלה */
   const view = useMemo(() => {
@@ -2536,13 +2572,15 @@ export default function App() {
       {/* ---------- YoY · השוואת שנים (תת-ניווט בתוך "מבט על") ---------- */}
       {board === "summary" && overviewTab === "yoy" && (() => {
         const now = new Date();
-        const y = now.getFullYear(), prevY = y - 1;
-        const mo = now.getMonth() + 1, dayOfMonth = now.getDate();
+        /* הדוח מדבר תמיד על אתמול — לכן משווים את "יום הדיווח" (אתמול) מול אותו יום אשתקד */
+        const reportDate = new Date(now); reportDate.setDate(reportDate.getDate() - 1);
+        const y = reportDate.getFullYear(), prevY = y - 1;
+        const mo = reportDate.getMonth() + 1, dayOfMonth = reportDate.getDate();
         const mm = String(mo).padStart(2, "0");
-        const heMonth = now.toLocaleDateString("he-IL", { month: "long" });
-        const cur = view; /* לא רלוונטי — נשתמש בטוטאל מהנתונים החיים */
+        const heMonth = reportDate.toLocaleDateString("he-IL", { month: "long" });
+        const fullDate = `${dayOfMonth}.${mo}`; /* תאריך מלא לתצוגה */
 
-        /* --- נקודת השנה הנוכחית: סך תקינים (תארים+הארווארד+אתר) מ-1 לחודש עד היום --- */
+        /* --- נקודת השנה הנוכחית: סך תקינים (תארים+הארווארד+אתר) מ-1 לחודש עד יום הדיווח --- */
         const curTotals = (() => {
           const t = reportTotals(data);
           const degQ = t ? t.degQuality : 0;
@@ -2552,34 +2590,43 @@ export default function App() {
         })();
 
         const hasHist = yoyData && yoyData[prevY];
-        /* --- בניית סדרה יומית מצטברת עבור טווח 1..dayOfMonth בחודש הנוכחי --- */
+        /* --- סדרה יומית: מצטבר + יומי, לכל יום בחודש --- */
         const buildCum = (yearMap) => {
           if (!yearMap) return null;
           const out = []; let cD = 0, cS = 0, cT = 0;
           for (let d = 1; d <= new Date(y, mo, 0).getDate(); d++) {
             const key = `${mm}-${String(d).padStart(2, "0")}`;
-            const b = yearMap[key];
-            if (b) { cD += b.digital; cS += b.site; cT += b.total; }
-            out.push({ day: d, digital: cD, site: cS, total: cT });
+            const b = yearMap[key] || { digital: 0, site: 0, total: 0 };
+            cD += b.digital; cS += b.site; cT += b.total;
+            out.push({ day: d, digital: cD, site: cS, total: cT, dayTotal: b.total, dayDigital: b.digital, daySite: b.site });
           }
           return out;
         };
         const histCum = hasHist ? buildCum(yoyData[prevY]) : null;
-        /* נקודת אשתקד עד אותו יום-בחודש */
-        const histAtDay = histCum ? (histCum[Math.min(dayOfMonth, histCum.length) - 1] || { total: 0, digital: 0, site: 0 }) : null;
+        /* נקודת אשתקד עד יום הדיווח */
+        const histAtDay = histCum ? (histCum[Math.min(dayOfMonth, histCum.length) - 1] || { total: 0, digital: 0, site: 0, dayTotal: 0 }) : null;
+        const histPrevDay = histCum && dayOfMonth > 1 ? histCum[dayOfMonth - 2] : null;
+        const curDailyEst = histAtDay && histPrevDay ? null : null; /* יומי של השנה לא זמין ברזולוציה יומית — מוצג רק מצטבר */
 
-        /* --- גרף: קו אשתקד (מצטבר יומי) מול נקודת השנה הנוכחית --- */
+        /* --- גרף: קו אשתקד (מצטבר) + נקודת השנה על יום הדיווח --- */
         const chartData = histCum ? histCum.map((r) => ({
-          day: String(r.day).padStart(2, "0"),
+          day: `${String(r.day).padStart(2, "0")}.${mo}`,
           [`${prevY}`]: r.total,
+          [`${prevY}_daily`]: r.dayTotal,
           [`${y}`]: r.day === dayOfMonth ? curTotals.total : null,
+          [`${y}_daily`]: curDaily && curDaily[r.day] != null ? curDaily[r.day] : null,
         })) : [];
+        const hasCurDaily = curDaily && Object.values(curDaily).some((v) => v != null);
 
-        /* --- אנוטציות חגים (עברי אוטומטי + ידני) --- */
-        const holidays = hebrewHolidaysForMonth(y, mo).concat(userEvents.filter((e) => {
-          const dt = e.date && e.date.match(/^\d{4}-(\d{2})-\d{2}$/);
-          return dt && +dt[1] === mo;
-        }).map((e) => ({ day: +e.date.split("-")[2], label: e.label, user: true })));
+        /* --- אנוטציות חגים: השנה (סגול) + אשתקד (כתום-עמום) + אירועים ידניים --- */
+        const holidays = [
+          ...hebrewHolidaysForMonth(y, mo).map((h) => ({ ...h, kind: "cur" })),
+          ...hebrewHolidaysForMonth(prevY, mo).map((h) => ({ ...h, kind: "prev" })),
+          ...userEvents.filter((e) => {
+            const dt = e.date && e.date.match(/^\d{4}-(\d{2})-\d{2}$/);
+            return dt && +dt[1] === mo;
+          }).map((e) => ({ day: +e.date.split("-")[2], label: e.label, kind: "user" })),
+        ];
 
         const yoyDiff = histAtDay && histAtDay.total > 0 ? Math.round(((curTotals.total - histAtDay.total) / histAtDay.total) * 100) : null;
         const tip = (fmt) => ({
@@ -2603,12 +2650,12 @@ export default function App() {
               <>
                 <div className="grid-kpi" style={{ marginBottom: 20 }}>
                   <div className="kpi">
-                    <div className="kpi-title">לידים איכותיים · {heMonth} {y} (עד {dayOfMonth}.{mo})</div>
+                    <div className="kpi-title">לידים איכותיים · {heMonth} {y} (עד {fullDate})</div>
                     <div className="kpi-value" style={{ color: C.teal }}>{num(curTotals.total)}</div>
                     <div className="kpi-target">דיגיטל {num(curTotals.digital)} · אתר {num(curTotals.site)}</div>
                   </div>
                   <div className="kpi">
-                    <div className="kpi-title">אשתקד · {heMonth} {prevY} (עד {dayOfMonth}.{mo})</div>
+                    <div className="kpi-title">אשתקד · {heMonth} {prevY} (עד {fullDate})</div>
                     <div className="kpi-value" style={{ color: C.dim }}>{num(histAtDay.total)}</div>
                     <div className="kpi-target">דיגיטל {num(histAtDay.digital)} · אתר {num(histAtDay.site)}</div>
                   </div>
@@ -2624,8 +2671,8 @@ export default function App() {
                 <div className="panel" style={{ marginBottom: 18 }}>
                   <h2>📅 מצטבר {heMonth}: {y} מול {prevY}</h2>
                   <div className="hint">
-                    קו {prevY} = לידים איכותיים מצטברים לאורך {heMonth} אשתקד · הנקודה של {y} = המצב הנוכחי עד {dayOfMonth}.{mo}
-                    {holidays.length ? " · קווים מקווקווים = חגים/אירועים" : ""}
+                    קו {prevY} = לידים איכותיים מצטברים לאורך {heMonth} אשתקד · הנקודה של {y} = המצב עד יום הדיווח ({fullDate})
+                    {holidays.length ? ` · קו סגול = חג ${y} · קו עמום = חג ${prevY} · קו כתום = אירוע שלכם` : ""}
                   </div>
                   <div style={{ width: "100%", height: 320, direction: "ltr" }}>
                     <ResponsiveContainer>
@@ -2633,20 +2680,31 @@ export default function App() {
                         <CartesianGrid stroke={C.panelSoft} vertical={false} />
                         <XAxis dataKey="day" {...axis} />
                         <YAxis {...axis} allowDecimals={false} />
-                        <Tooltip {...tip((v, n) => [v == null ? "—" : num(v), n])} />
-                        <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} />
-                        {holidays.map((h, i) => (
-                          <ReferenceLine key={i} x={String(h.day).padStart(2, "0")}
-                            stroke={h.user ? C.amber : C.violet} strokeDasharray="4 3"
-                            label={{ value: h.label, fill: h.user ? C.amber : C.violet, fontSize: 10, angle: -90, position: "insideTopRight" }} />
-                        ))}
+                        <Tooltip {...tip((v, n, p) => {
+                          if (v == null) return ["—", n];
+                          if (n.includes("אשתקד") && p && p.payload) return [`${num(v)} מצטבר · ${num(p.payload[`${prevY}_daily`] || 0)} ביום`, n];
+                          return [num(v), n];
+                        })} />
+                        <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} payload={[
+                          { value: `${prevY} (אשתקד)`, type: "line", color: C.dim },
+                          { value: `${y} (עד ${fullDate})`, type: "line", color: C.teal },
+                        ]} />
+                        {holidays.map((h, i) => {
+                          const col = h.kind === "user" ? C.amber : h.kind === "prev" ? "#7A6BB0" : C.violet;
+                          const lbl = h.kind === "prev" ? `${h.label} (${prevY})` : h.label;
+                          return (
+                            <ReferenceLine key={i} x={`${String(h.day).padStart(2, "0")}.${mo}`}
+                              stroke={col} strokeDasharray={h.kind === "prev" ? "2 4" : "4 3"} strokeOpacity={h.kind === "prev" ? 0.7 : 1}
+                              label={{ value: lbl, fill: col, fontSize: 9.5, angle: -90, position: "insideTopRight" }} />
+                          );
+                        })}
                         <Line type="monotone" dataKey={`${prevY}`} name={`${prevY} (אשתקד)`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
                         <Line type="monotone" dataKey={`${y}`} name={`${y} (השנה)`} stroke={C.teal} strokeWidth={3} dot={{ r: 5 }} connectNulls />
                       </ComposedChart>
                     </ResponsiveContainer>
                   </div>
                   <div style={{ color: C.dim, fontSize: 12, marginTop: 10 }}>
-                    ההשוואה היא "תפוח לתפוח" — אותו חלון ימים בשני החודשים (1–{dayOfMonth}). {yoyUpdatedAt ? `נתוני ${prevY} עודכנו: ${heDate(yoyUpdatedAt)}` : ""}
+                    ההשוואה היא "תפוח לתפוח" — אותו חלון ימים (1–{fullDate}). הדוח מדבר על יום קודם, לכן משווים את יום הדיווח מול אותו יום אשתקד. {yoyUpdatedAt ? `נתוני ${prevY} עודכנו: ${heDate(yoyUpdatedAt)}` : ""}
                   </div>
                   <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <input className="qual-select" style={{ maxWidth: 160 }} placeholder="שם אירוע" value={evName} onChange={(e) => setEvName(e.target.value)} />
@@ -2664,6 +2722,35 @@ export default function App() {
                         {e.label} ({e.date.split("-")[2]}.{mo}) ✕
                       </span>
                     ))}
+                  </div>
+                </div>
+
+                {/* מדד יומי: כמה לידים איכותיים נכנסו בכל יום (אשתקד) */}
+                <div className="panel" style={{ marginBottom: 18 }}>
+                  <h2>📊 לידים איכותיים לפי יום · {heMonth}: {y} מול {prevY}</h2>
+                  <div className="hint">
+                    כמה לידים איכותיים נכנסו בכל יום בנפרד (לא מצטבר) — מזהה את הפיקים היומיים.
+                    {hasCurDaily ? ` נתוני ${y} מחושבים מהפרש הדוחות היומיים בארכיון.` : ` נתוני ${y} ייכנסו ככל שייצבר ארכיון יומי (יום אחד לפחות אחורה).`}
+                  </div>
+                  <div style={{ width: "100%", height: 260, direction: "ltr" }}>
+                    <ResponsiveContainer>
+                      <ComposedChart data={chartData} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                        <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                        <XAxis dataKey="day" {...axis} />
+                        <YAxis {...axis} allowDecimals={false} />
+                        <Tooltip {...tip((v, n) => [v == null ? "—" : num(v), n])} />
+                        <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} />
+                        {holidays.map((h, i) => {
+                          const col = h.kind === "user" ? C.amber : h.kind === "prev" ? "#7A6BB0" : C.violet;
+                          return (
+                            <ReferenceLine key={i} x={`${String(h.day).padStart(2, "0")}.${mo}`}
+                              stroke={col} strokeDasharray={h.kind === "prev" ? "2 4" : "4 3"} strokeOpacity={h.kind === "prev" ? 0.6 : 0.9} />
+                          );
+                        })}
+                        {hasCurDaily && <Bar dataKey={`${y}_daily`} name={`${y} · יומי`} fill={C.teal} radius={[3, 3, 0, 0]} maxBarSize={16} />}
+                        <Bar dataKey={`${prevY}_daily`} name={`${prevY} · יומי`} fill="#7FB2E8" radius={[3, 3, 0, 0]} maxBarSize={16} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
                   </div>
                 </div>
               </>
