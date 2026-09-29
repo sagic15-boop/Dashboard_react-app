@@ -1613,27 +1613,31 @@ export default function App() {
         const main = await store.get(dayKey(iso));
         const site = await store.get("peres:siteday:" + iso);
         if (!main && !site) return null;
-        let total = 0;
-        if (main && main.data) { const rt = reportTotals(main.data); if (rt) total += (rt.degQuality || 0) + (rt.harvardQuality || 0); }
-        if (site && site.data && site.data.summary) total += (site.data.summary.actual.quality || 0);
-        return total;
+        let q = 0, b = 0;
+        if (main && main.data) {
+          const rt = reportTotals(main.data);
+          if (rt) { q += (rt.degQuality || 0) + (rt.harvardQuality || 0); b += (rt.spent || 0) + (rt.harvardSpent || 0); }
+        }
+        if (site && site.data && site.data.summary) q += (site.data.summary.actual.quality || 0); /* לאתר אין תקציב */
+        return { q, b };
       };
       const cumByDay = {};
       for (let d = 1; d <= daysInM; d++) {
         const iso = `${y}-${mm}-${String(d).padStart(2, "0")}`;
         cumByDay[d] = await cumOfDay(iso);
       }
-      /* מצטבר רציף של 2026 (הערך הידוע האחרון ממלא חורים) + גזירת היומי */
-      const daily = {}, cumCur = {}; let lastCum = null;
+      /* מצטבר רציף של 2026 + יומי + עלות לליד איכותי מצטברת */
+      const daily = {}, cumCur = {}, cpqlCur = {}; let lastQ = null;
       for (let d = 1; d <= daysInM; d++) {
-        const c = cumByDay[d];
-        if (c == null) { daily[d] = null; cumCur[d] = lastCum; continue; } /* חור — הקו המצטבר נשאר על הערך האחרון */
-        cumCur[d] = c;
-        if (lastCum == null) { daily[d] = null; lastCum = c; continue; } /* יום ראשון בארכיון — אין ממה לגזור יומי */
-        daily[d] = Math.max(c - lastCum, 0);
-        lastCum = c;
+        const rec = cumByDay[d];
+        if (rec == null) { daily[d] = null; cumCur[d] = lastQ; cpqlCur[d] = null; continue; }
+        cumCur[d] = rec.q;
+        cpqlCur[d] = rec.q > 0 ? Math.round(rec.b / rec.q) : null;
+        if (lastQ == null) { daily[d] = null; lastQ = rec.q; continue; }
+        daily[d] = Math.max(rec.q - lastQ, 0);
+        lastQ = rec.q;
       }
-      setCurDaily({ daily, cum: cumCur });
+      setCurDaily({ daily, cum: cumCur, cpql: cpqlCur });
     })();
   }, [board, overviewTab, updatedAt, siteUpdatedAt, dayIndex]);
 
@@ -2084,7 +2088,7 @@ export default function App() {
               await store.set("peres:autosync", e.target.checked);
               if (e.target.checked && link) await store.set("peres:link", link);
             }} />
-            🔄 סנכרון אוטומטי — שתי החוברות (תארים + אתר) יימשכו מהקישורים השמורים בכל פתיחה של הדשבורד, וגם מדי יום ב־10:00 (כשהדשבורד פתוח בדפדפן)
+            🔄 סנכרון אוטומטי — כל החוברות (תארים + אתר + YoY) יימשכו מהקישורים השמורים בכל פתיחה של הדשבורד, וגם מדי יום ב־10:00 (כשהדשבורד פתוח בדפדפן)
           </label>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button className="btn" disabled={loading} onClick={fetchSheet}>{loading ? "⏳ טוען…" : "טעינה מהקישור"}</button>
@@ -2735,13 +2739,16 @@ export default function App() {
             .map((e) => ({ day: +e.date.split("-")[2], label: e.label, kind: "user" })),
         ];
 
+        const cdDaily = (curDaily && curDaily.daily) || {};
+        const hasCurDaily = Object.values(cdDaily).some((v) => v != null);
         const chartData = histSeries.map((r) => ({
           day: `${String(r.day).padStart(2, "0")}.${mo}`,
           [`${prevY}`]: r.val,
           [`${prevY}_daily`]: r.dayVal,
           [`${y}`]: r.day === dayOfMonth ? curVal : null,
+          [`${y}_daily`]: cdDaily[r.day] != null ? cdDaily[r.day] : null,
           [`cpql_${prevY}`]: r.cpqlCum,
-          [`cpql_${y}`]: r.day === dayOfMonth ? curCPQL : null,
+          [`cpql_${y}`]: (curDaily && curDaily.cpql && curDaily.cpql[r.day] != null) ? curDaily.cpql[r.day] : (r.day === dayOfMonth ? curCPQL : null),
         }));
 
         const yoyDiff = (histAtDay.val != null && histAtDay.val !== 0 && curVal != null)
@@ -2904,7 +2911,7 @@ export default function App() {
                         );
                       })}
                       <Line type="monotone" dataKey={`cpql_${prevY}`} name={`${prevY} (אשתקד)`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
-                      <Line type="monotone" dataKey={`cpql_${y}`} name={`${y} (השנה)`} stroke={C.coral} strokeWidth={3} dot={{ r: 4 }} connectNulls />
+                      <Line type="monotone" dataKey={`cpql_${y}`} name={`${y} (השנה)`} stroke={C.coral} strokeWidth={3} dot={false} connectNulls />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>
@@ -2913,8 +2920,11 @@ export default function App() {
 
             {(metric === "gross" || metric === "quality") && (
               <div className="panel" style={{ marginBottom: 18 }}>
-                <h2>📊 {M.label} לפי יום · {heMonth} {prevY}</h2>
-                <div className="hint">כמה {M.label} נכנסו בכל יום בנפרד (לא מצטבר) — הפיקים היומיים באשתקד.</div>
+                <h2>📊 {M.label} לפי יום · {heMonth}: {y} מול {prevY}</h2>
+                <div className="hint">
+                  כמה {M.label} נכנסו בכל יום בנפרד (לא מצטבר) — הפיקים היומיים.
+                  {hasCurDaily ? ` נתוני ${y} מחושבים מהפרש הדוחות היומיים בארכיון.` : ` נתוני ${y} ייכנסו ככל שייצבר ארכיון יומי.`}
+                </div>
                 <div style={{ width: "100%", height: 260, direction: "ltr" }}>
                   <ResponsiveContainer>
                     <ComposedChart data={chartData} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
@@ -2930,7 +2940,8 @@ export default function App() {
                             stroke={col} strokeDasharray={h.kind === "prev" ? "2 4" : "5 3"} strokeOpacity={h.kind === "prev" ? 0.6 : 0.9} />
                         );
                       })}
-                      <Bar dataKey={`${prevY}_daily`} name={`${prevY} · יומי`} fill="#7FB2E8" radius={[3, 3, 0, 0]} maxBarSize={18} />
+                      {hasCurDaily && <Bar dataKey={`${y}_daily`} name={`${y} · יומי`} fill={C.teal} radius={[3, 3, 0, 0]} maxBarSize={14} />}
+                      <Bar dataKey={`${prevY}_daily`} name={`${prevY} · יומי`} fill="#7FB2E8" radius={[3, 3, 0, 0]} maxBarSize={14} />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>
