@@ -1496,7 +1496,15 @@ export default function App() {
             await store.set("peres:yoy:link", theLink);
             if (!silent) {
               const budgetOk = budget && Object.keys(budget).length > 0;
-              setStatus({ kind: "ok", msg: budgetOk ? "חוברת ה-YoY נטענה (לידים + תקציב)" : `חוברת ה-YoY נטענה (לידים בלבד — לשונית התקציב "${(budgetSheet || {}).name || "לא נמצאה"}" לא הניבה נתונים)` });
+              if (budgetOk) {
+                setStatus({ kind: "ok", msg: "חוברת ה-YoY נטענה (לידים + תקציב)" });
+              } else if (budgetCsv) {
+                /* דיאגנוסטיקה: מראה את 2 השורות הראשונות של לשונית התקציב כדי לאבחן */
+                const bl = budgetCsv.split("\n").slice(0, 3).map((l) => l.slice(0, 60)).join("  ⏎  ");
+                setStatus({ kind: "err", msg: `לשונית התקציב נמצאה אך לא נקראה. 3 השורות הראשונות שלה: ${bl}` });
+              } else {
+                setStatus({ kind: "err", msg: `לשונית התקציב לא זוהתה. לשוניות: ${sheets.map((s) => s.name).join(" · ")}` });
+              }
             }
             return;
           }
