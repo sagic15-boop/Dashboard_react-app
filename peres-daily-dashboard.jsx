@@ -534,7 +534,10 @@ function parseYoYBudget(csvText) {
   for (let i = 0; i < Math.min(rows.length, 8); i++) {
     const cells = rows[i].map((c) => String(c || "").trim());
     const dCol = cells.findIndex((c) => /date|תאריך/i.test(c));
-    const cCol = cells.findIndex((c) => /cost|עלות|תקציב|spend/i.test(c));
+    /* עדיפות לעמודת עלות בשקלים (ILS/₪/שקל); רק אם אין — עמודת עלות כללית (למשל USD) */
+    let cCol = cells.findIndex((c) => /cost|עלות|תקציב|spend/i.test(c) && /ils|₪|שקל|nis/i.test(c));
+    if (cCol === -1) cCol = cells.findIndex((c) => /cost|עלות|תקציב|spend/i.test(c) && !/usd|\$|dollar/i.test(c));
+    if (cCol === -1) cCol = cells.findIndex((c) => /cost|עלות|תקציב|spend/i.test(c));
     if (dCol !== -1 && cCol !== -1) { hdrIdx = i; ci = { date: dCol, cost: cCol, source: cells.findIndex((c) => /source|מקור|פלטפורמה/i.test(c)) }; break; }
   }
   if (hdrIdx === -1) return null;
@@ -1496,15 +1499,7 @@ export default function App() {
             await store.set("peres:yoy:link", theLink);
             if (!silent) {
               const budgetOk = budget && Object.keys(budget).length > 0;
-              if (budgetOk) {
-                setStatus({ kind: "ok", msg: "חוברת ה-YoY נטענה (לידים + תקציב)" });
-              } else if (budgetCsv) {
-                /* דיאגנוסטיקה: מראה את 2 השורות הראשונות של לשונית התקציב כדי לאבחן */
-                const bl = budgetCsv.split("\n").slice(0, 3).map((l) => l.slice(0, 60)).join("  ⏎  ");
-                setStatus({ kind: "err", msg: `לשונית התקציב נמצאה אך לא נקראה. 3 השורות הראשונות שלה: ${bl}` });
-              } else {
-                setStatus({ kind: "err", msg: `לשונית התקציב לא זוהתה. לשוניות: ${sheets.map((s) => s.name).join(" · ")}` });
-              }
+              setStatus({ kind: "ok", msg: budgetOk ? "חוברת ה-YoY נטענה (לידים + תקציב)" : "חוברת ה-YoY נטענה (לידים בלבד — לא נמצאה לשונית תקציב תקינה)" });
             }
             return;
           }
