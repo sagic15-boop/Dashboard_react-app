@@ -1475,7 +1475,12 @@ export default function App() {
           if (leads && Object.keys(leads).length) {
             await saveYoY(leads, budget);
             await store.set("peres:yoy:link", theLink);
-            if (!silent) setStatus({ kind: "ok", msg: `חוברת ה-YoY נטענה${budget ? " (לידים + תקציב)" : " (לידים בלבד — לא נמצאה לשונית תקציב)"}` });
+            if (!silent) {
+              const budgetYears = budget ? Object.keys(budget) : [];
+              const budgetOk = budget && budgetYears.length > 0;
+              const diag = `לשוניות שנמצאו: ${sheets.map((s) => s.name).join(" · ")} | לידים: ${(bruttoSheet || anyLeadsSheet || {}).name || "—"} | תקציב: ${(budgetSheet || {}).name || "לא נמצא"}${budgetOk ? "" : " (לא נקרא תקציב)"}`;
+              setStatus({ kind: budgetOk ? "ok" : "err", msg: budgetOk ? `חוברת ה-YoY נטענה (לידים + תקציב)` : `חוברת ה-YoY נטענה — אך התקציב לא נקרא. ${diag}` });
+            }
             return;
           }
         }
