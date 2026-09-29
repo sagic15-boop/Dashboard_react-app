@@ -469,11 +469,28 @@ export { parseReport };
 
 /* פרסר לגיליון ה-YoY: שורה per ליד עם תאריך / מקור / איכות.
    מחזיר מפה: { "MM-DD": {digital, site} } של תקינים יומיים, מקובצת לפי יום-בשנה. */
-const _yoyParseDate = (s) => {
+/* מזהה אם עמודת תאריכים היא dd/mm (ישראלי) או mm/dd (אמריקאי, למשל מ-Supermetrics).
+   אם באיזשהו ערך החלק הראשון > 12 → הוא חייב להיות יום → פורמט dd/mm.
+   אם השני > 12 → הוא חייב להיות יום → פורמט mm/dd. ברירת מחדל: dd/mm. */
+const _detectDateOrder = (samples) => {
+  let firstGt12 = false, secondGt12 = false;
+  for (const s of samples) {
+    const m = String(s).trim().match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-]\d{2,4}/);
+    if (!m) continue;
+    const a = +m[1], b = +m[2];
+    if (a > 12) firstGt12 = true;
+    if (b > 12) secondGt12 = true;
+  }
+  if (secondGt12 && !firstGt12) return "mdy"; /* mm/dd/yyyy */
+  return "dmy"; /* ברירת מחדל dd/mm/yyyy */
+};
+const _yoyParseDate = (s, order = "dmy") => {
   const m = String(s).trim().match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
   if (!m) return null;
-  let [, d, mo, y] = m; y = y.length === 2 ? "20" + y : y;
-  return { y: +y, mo: +mo, d: +d, mmdd: `${String(+mo).padStart(2, "0")}-${String(+d).padStart(2, "0")}` };
+  let a = +m[1], b = +m[2], y = m[3]; y = y.length === 2 ? "20" + y : y;
+  const d = order === "mdy" ? b : a;
+  const mo = order === "mdy" ? a : b;
+  return { y: +y, mo, d, mmdd: `${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}` };
 };
 const _isSiteSrc = (s) => { const v = String(s || "").trim(); return v.includes("אתר") || /site|website|magazine|מגזין/i.test(v); };
 
@@ -490,10 +507,11 @@ function parseYoY(csvText) {
     if (dCol !== -1 && qCol !== -1) { hdrIdx = i; ci = { date: dCol, source: cells.findIndex((c) => c.includes("מקור")), quality: qCol }; break; }
   }
   if (hdrIdx === -1) return null;
+  const order = _detectDateOrder(rows.slice(hdrIdx + 1, hdrIdx + 400).map((r) => r[ci.date]));
   const byYear = {};
   for (let i = hdrIdx + 1; i < rows.length; i++) {
     const r = rows[i];
-    const dt = _yoyParseDate(r[ci.date]);
+    const dt = _yoyParseDate(r[ci.date], order);
     if (!dt) continue;
     const q = String(r[ci.quality] || "").trim();
     const isSite = _isSiteSrc(ci.source !== -1 ? r[ci.source] : "");
@@ -520,10 +538,11 @@ function parseYoYBudget(csvText) {
     if (dCol !== -1 && cCol !== -1) { hdrIdx = i; ci = { date: dCol, cost: cCol, source: cells.findIndex((c) => /source|מקור|פלטפורמה/i.test(c)) }; break; }
   }
   if (hdrIdx === -1) return null;
+  const order = _detectDateOrder(rows.slice(hdrIdx + 1, hdrIdx + 400).map((r) => r[ci.date]));
   const byYear = {};
   for (let i = hdrIdx + 1; i < rows.length; i++) {
     const r = rows[i];
-    const dt = _yoyParseDate(r[ci.date]);
+    const dt = _yoyParseDate(r[ci.date], order);
     if (!dt) continue;
     const cost = toNum(r[ci.cost]);
     if (cost === null) continue;
@@ -1476,10 +1495,8 @@ export default function App() {
             await saveYoY(leads, budget);
             await store.set("peres:yoy:link", theLink);
             if (!silent) {
-              const budgetYears = budget ? Object.keys(budget) : [];
-              const budgetOk = budget && budgetYears.length > 0;
-              const diag = `לשוניות שנמצאו: ${sheets.map((s) => s.name).join(" · ")} | לידים: ${(bruttoSheet || anyLeadsSheet || {}).name || "—"} | תקציב: ${(budgetSheet || {}).name || "לא נמצא"}${budgetOk ? "" : " (לא נקרא תקציב)"}`;
-              setStatus({ kind: budgetOk ? "ok" : "err", msg: budgetOk ? `חוברת ה-YoY נטענה (לידים + תקציב)` : `חוברת ה-YoY נטענה — אך התקציב לא נקרא. ${diag}` });
+              const budgetOk = budget && Object.keys(budget).length > 0;
+              setStatus({ kind: "ok", msg: budgetOk ? "חוברת ה-YoY נטענה (לידים + תקציב)" : `חוברת ה-YoY נטענה (לידים בלבד — לשונית התקציב "${(budgetSheet || {}).name || "לא נמצאה"}" לא הניבה נתונים)` });
             }
             return;
           }
