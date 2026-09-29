@@ -1459,19 +1459,17 @@ export default function App() {
         const res = await fetchWithTimeout(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`, 25000);
         if (res.ok) {
           const wb = XLSX.read(await res.arrayBuffer(), { type: "array" });
-          let leadsCsv = null, budgetCsv = null;
-          for (const name of wb.SheetNames) {
-            const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
-            /* לשונית לידים = תאריך + איכות · לשונית תקציב = תאריך + Cost/עלות */
-            if (csv.includes("תאריך") && csv.includes("איכות") && !leadsCsv) {
-              /* עדיפות ללשונית "ברוטו" (כל הלידים) על פני "תקינים בלבד" */
-              if (/ברוטו/.test(name) || !leadsCsv) leadsCsv = csv;
-              if (/ברוטו/.test(name)) leadsCsv = csv;
-            }
-            if (/cost|עלות|תקציב/i.test(csv.split("\n")[0] || "") && !budgetCsv) budgetCsv = csv;
-          }
-          /* אם לא נמצאה לשונית ברוטו במפורש — ניקח את הראשונה עם איכות */
-          if (!leadsCsv) for (const name of wb.SheetNames) { const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]); if (csv.includes("תאריך") && csv.includes("איכות")) { leadsCsv = csv; break; } }
+          /* ממפים כל לשונית ל-CSV ומסווגים לפי שם + תוכן */
+          const sheets = wb.SheetNames.map((name) => ({ name, csv: XLSX.utils.sheet_to_csv(wb.Sheets[name]) }));
+          const isLeads = (s) => s.csv.includes("תאריך") && s.csv.includes("איכות");
+          const isBudget = (s) => /cost|עלות|תקציב|spend/i.test((s.csv.split("\n")[0] || "")) || /תקציב|cost|spend/i.test(s.name);
+          /* לידים: עדיפות מוחלטת ללשונית "ברוטו" (כל הלידים). רק אם אין — כל לשונית לידים אחרת */
+          const bruttoSheet = sheets.find((s) => /ברוטו/.test(s.name) && isLeads(s));
+          const anyLeadsSheet = sheets.find((s) => isLeads(s) && !/תקינ/.test(s.name)) || sheets.find(isLeads);
+          const leadsCsv = bruttoSheet ? bruttoSheet.csv : (anyLeadsSheet ? anyLeadsSheet.csv : null);
+          /* תקציב: לשונית עם "תקציב"/Cost בשם או בכותרת (ולא לשונית הלידים) */
+          const budgetSheet = sheets.find((s) => isBudget(s) && !isLeads(s)) || sheets.find((s) => isBudget(s));
+          const budgetCsv = budgetSheet && budgetSheet.csv !== leadsCsv ? budgetSheet.csv : null;
           const leads = leadsCsv ? parseYoY(leadsCsv) : null;
           const budget = budgetCsv ? parseYoYBudget(budgetCsv) : null;
           if (leads && Object.keys(leads).length) {
@@ -2653,7 +2651,7 @@ export default function App() {
           cpl:     { label: "עלות לליד ברוטו",    fmt: (v) => nis(v),    kind: "cost",  better: "down" },
           cpql:    { label: "עלות לליד איכותי",   fmt: (v) => nis(v),    kind: "cost",  better: "down" },
         };
-        const metric = METRICS[yoyMetric] ? yoyMetric : "quality";
+        const metric = "quality"; /* תצוגה כללית — הטבלה המסכמת מכסה את כל המדדים */
         const M = METRICS[metric];
         const metricVal = (g, q, b) => {
           if (metric === "gross") return g;
@@ -2738,12 +2736,6 @@ export default function App() {
                 🧪 נתוני דוגמה להמחשה — כך ייראה טאב ה-YoY. לחיבור נתונים אמיתיים: הזינו את קישור חוברת ה-YoY בחלון "חיבור הגיליון" (לשונית לידים: תאריך/מקור/איכות · לשונית תקציב: Date/Cost).
               </div>
             )}
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-              {Object.entries(METRICS).map(([k, m]) => (
-                <button key={k} className={`subtab ${metric === k ? "on" : ""}`} onClick={() => setYoyMetric(k)}>{m.label}</button>
-              ))}
-            </div>
-
             <div className="grid-kpi" style={{ marginBottom: 20 }}>
               <div className="kpi">
                 <div className="kpi-title">{M.label} · {heMonth} {y} (עד {fullDate})</div>
