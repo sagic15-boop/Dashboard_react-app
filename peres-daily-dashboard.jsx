@@ -496,7 +496,7 @@ const _isSiteSrc = (s) => { const v = String(s || "").trim(); return v.includes(
 
 /* גיליון לידים (ברוטו): שורה per ליד עם תאריך/מקור/איכות.
    מחזיר { year: { "MM-DD": {gross:{digital,site,total}, quality:{digital,site,total}} } } */
-function parseYoY(csvText) {
+function parseYoY(csvText, forceYear) {
   const rows = Papa.parse(csvText).data;
   if (!rows.length) return null;
   let hdrIdx = -1, ci = {};
@@ -515,19 +515,21 @@ function parseYoY(csvText) {
     if (!dt) continue;
     const q = String(r[ci.quality] || "").trim();
     const isSite = _isSiteSrc(ci.source !== -1 ? r[ci.source] : "");
-    byYear[dt.y] = byYear[dt.y] || {};
-    const b = byYear[dt.y][dt.mmdd] || { gross: { digital: 0, site: 0, total: 0 }, quality: { digital: 0, site: 0, total: 0 } };
+    /* בשנה אקדמית — כל השורות (אוקטובר-ספטמבר, חוצות שנה קלנדרית) תחת מפתח שנה אחד */
+    const yk = forceYear || dt.y;
+    byYear[yk] = byYear[yk] || {};
+    const b = byYear[yk][dt.mmdd] || { gross: { digital: 0, site: 0, total: 0 }, quality: { digital: 0, site: 0, total: 0 } };
     const k = isSite ? "site" : "digital";
     b.gross[k]++; b.gross.total++;
     if (q === "תקין") { b.quality[k]++; b.quality.total++; }
-    byYear[dt.y][dt.mmdd] = b;
+    byYear[yk][dt.mmdd] = b;
   }
   return byYear;
 }
 export { parseYoY };
 
 /* גיליון תקציב: Data source / Date / Cost (ILS). מחזיר { year: { "MM-DD": {digital, site, total} } } בש"ח */
-function parseYoYBudget(csvText) {
+function parseYoYBudget(csvText, forceYear) {
   const rows = Papa.parse(csvText).data;
   if (!rows.length) return null;
   let hdrIdx = -1, ci = {};
@@ -550,11 +552,12 @@ function parseYoYBudget(csvText) {
     const cost = toNum(r[ci.cost]);
     if (cost === null) continue;
     const isSite = _isSiteSrc(ci.source !== -1 ? r[ci.source] : "");
-    byYear[dt.y] = byYear[dt.y] || {};
-    const b = byYear[dt.y][dt.mmdd] || { digital: 0, site: 0, total: 0 };
+    const yk = forceYear || dt.y;
+    byYear[yk] = byYear[yk] || {};
+    const b = byYear[yk][dt.mmdd] || { digital: 0, site: 0, total: 0 };
     if (isSite) b.site += cost; else b.digital += cost;
     b.total += cost;
-    byYear[dt.y][dt.mmdd] = b;
+    byYear[yk][dt.mmdd] = b;
   }
   return byYear;
 }
@@ -1481,25 +1484,55 @@ export default function App() {
         const res = await fetchWithTimeout(`https://docs.google.com/spreadsheets/d/${m[1]}/export?format=xlsx`, 25000);
         if (res.ok) {
           const wb = XLSX.read(await res.arrayBuffer(), { type: "array" });
-          /* ממפים כל לשונית ל-CSV ומסווגים לפי שם + תוכן */
           const sheets = wb.SheetNames.map((name) => ({ name, csv: XLSX.utils.sheet_to_csv(wb.Sheets[name]) }));
           const isLeads = (s) => s.csv.includes("תאריך") && s.csv.includes("איכות");
           const isBudget = (s) => /cost|עלות|תקציב|spend/i.test((s.csv.split("\n")[0] || "")) || /תקציב|cost|spend/i.test(s.name);
-          /* לידים: עדיפות מוחלטת ללשונית "ברוטו" (כל הלידים). רק אם אין — כל לשונית לידים אחרת */
-          const bruttoSheet = sheets.find((s) => /ברוטו/.test(s.name) && isLeads(s));
-          const anyLeadsSheet = sheets.find((s) => isLeads(s) && !/תקינ/.test(s.name)) || sheets.find(isLeads);
-          const leadsCsv = bruttoSheet ? bruttoSheet.csv : (anyLeadsSheet ? anyLeadsSheet.csv : null);
-          /* תקציב: לשונית עם "תקציב"/Cost בשם או בכותרת (ולא לשונית הלידים) */
-          const budgetSheet = sheets.find((s) => isBudget(s) && !isLeads(s)) || sheets.find((s) => isBudget(s));
-          const budgetCsv = budgetSheet && budgetSheet.csv !== leadsCsv ? budgetSheet.csv : null;
-          const leads = leadsCsv ? parseYoY(leadsCsv) : null;
-          const budget = budgetCsv ? parseYoYBudget(budgetCsv) : null;
-          if (leads && Object.keys(leads).length) {
-            await saveYoY(leads, budget);
+          /* קבוצת שנה אקדמית לפי השם: "אוקטובר 24..." → 2025 (שנה קודמת) · "אוקטובר 25..." → 2026 (שנה נוכחית).
+             מפתח השנה = שנת הסיום האקדמית (24→2025, 25→2026). */
+          const yearKeyOf = (name) => {
+            const m = name.match(/אוקטובר\s*(\d{2})/); /* השנה הראשונה בשם */
+            if (!m) return null;
+            return 2000 + parseInt(m[1], 10) + 1; /* 24 → 2025, 25 → 2026 */
+          };
+          /* מאחדים את התוצאות של כל הקבוצות למבנה { year: {...} } */
+          const leads = {}, budget = {};
+          const groups = {}; /* yearKey → {leadsCsv, budgetCsv} */
+          for (const s of sheets) {
+            const yk = yearKeyOf(s.name);
+            if (!yk) continue;
+            groups[yk] = groups[yk] || {};
+            if (isLeads(s)) {
+              /* עדיפות ל"ברוטו" על "תקינים" */
+              if (/ברוטו/.test(s.name)) groups[yk].leadsCsv = s.csv;
+              else if (!groups[yk].leadsCsv && !/תקינ/.test(s.name)) groups[yk].leadsCsv = s.csv;
+              else if (!groups[yk].leadsCsv) groups[yk].leadsCsv = s.csv;
+            }
+            if (isBudget(s) && !isLeads(s)) groups[yk].budgetCsv = s.csv;
+          }
+          for (const [yk, g] of Object.entries(groups)) {
+            const ykNum = +yk;
+            if (g.leadsCsv) { const l = parseYoY(g.leadsCsv, ykNum); if (l && l[ykNum]) leads[ykNum] = { ...(leads[ykNum] || {}), ...l[ykNum] }; }
+            if (g.budgetCsv) { const b = parseYoYBudget(g.budgetCsv, ykNum); if (b && b[ykNum]) budget[ykNum] = { ...(budget[ykNum] || {}), ...b[ykNum] }; }
+          }
+          /* תאימות לאחור: אם לא נמצאו קבוצות אקדמיות, ננסה את הזיהוי הישן (לשונית אחת) */
+          if (!Object.keys(leads).length) {
+            const bruttoSheet = sheets.find((s) => /ברוטו/.test(s.name) && isLeads(s));
+            const anyLeadsSheet = sheets.find((s) => isLeads(s) && !/תקינ/.test(s.name)) || sheets.find(isLeads);
+            const leadsCsv = bruttoSheet ? bruttoSheet.csv : (anyLeadsSheet ? anyLeadsSheet.csv : null);
+            const budgetSheet = sheets.find((s) => isBudget(s) && !isLeads(s)) || sheets.find((s) => isBudget(s));
+            const budgetCsv = budgetSheet && budgetSheet.csv !== leadsCsv ? budgetSheet.csv : null;
+            const l = leadsCsv ? parseYoY(leadsCsv) : null;
+            const b = budgetCsv ? parseYoYBudget(budgetCsv) : null;
+            if (l) Object.assign(leads, l);
+            if (b) Object.assign(budget, b);
+          }
+          if (Object.keys(leads).length) {
+            await saveYoY(leads, Object.keys(budget).length ? budget : null);
             await store.set("peres:yoy:link", theLink);
             if (!silent) {
-              const budgetOk = budget && Object.keys(budget).length > 0;
-              setStatus({ kind: "ok", msg: budgetOk ? "חוברת ה-YoY נטענה (לידים + תקציב)" : "חוברת ה-YoY נטענה (לידים בלבד — לא נמצאה לשונית תקציב תקינה)" });
+              const budgetOk = Object.keys(budget).length > 0;
+              const years = Object.keys(leads).sort().join(", ");
+              setStatus({ kind: "ok", msg: `חוברת ה-YoY נטענה (שנים: ${years}${budgetOk ? " · לידים + תקציב" : " · לידים בלבד"})` });
             }
             return;
           }
@@ -2947,6 +2980,133 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {(() => {
+              /* ===== השוואה שנתית אקדמית מצטברת (אוקטובר → יום הדיווח) ===== */
+              /* שנה אקדמית: מתחילה באוקטובר. מפתח השנה = שנת הסיום (אוק'25–ספט'26 → 2026). */
+              const acadKey = (mo >= 10) ? y + 1 : y; /* יום הדיווח נמצא בשנה האקדמית הזו */
+              const prevAcadKey = acadKey - 1;
+              const hasCur = leadsYoY && leadsYoY[acadKey];
+              const hasPrev = leadsYoY && leadsYoY[prevAcadKey];
+              if (!hasCur && !hasPrev && !isDemoYoY) return null;
+
+              /* רצף הימים האקדמי: אוקטובר(1) → ... → ספטמבר, עד יום הדיווח */
+              const acadMonths = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+              const curMonthIdx = acadMonths.indexOf(mo);
+              const seq = []; /* [{mo, d, label}] עד יום הדיווח כולל */
+              for (let mi = 0; mi <= curMonthIdx; mi++) {
+                const m2 = acadMonths[mi];
+                const yForDays = (m2 >= 10) ? acadKey - 1 : acadKey; /* אוק-דצמ בשנה הקלנדרית הקודמת */
+                const dim = new Date(yForDays, m2, 0).getDate();
+                const lastD = (mi === curMonthIdx) ? dayOfMonth : dim;
+                for (let d = 1; d <= lastD; d++) seq.push({ mo: m2, d, label: `${String(d).padStart(2, "0")}/${m2}` });
+              }
+
+              /* מצטבר אקדמי לשנה נתונה מתוך leadsYoY/budgetYoY (המפתח הוא MM-DD) */
+              const acadCum = (yearKey) => {
+                const lm = (leadsYoY && leadsYoY[yearKey]) || {};
+                const bm = (budgetYoY && budgetYoY[yearKey]) || {};
+                let g = 0, q = 0, b = 0; const pts = [];
+                for (const s of seq) {
+                  const key = `${String(s.mo).padStart(2, "0")}-${String(s.d).padStart(2, "0")}`;
+                  const L = lm[key], B = bm[key];
+                  if (L) { g += L.gross.total; q += L.quality.total; }
+                  if (B) b += B.total;
+                  pts.push({ label: s.label, g, q, b });
+                }
+                return pts;
+              };
+
+              /* השנה הנוכחית: גיליון (אוק'25–יולי'26) + ארכיון חי (אוגוסט'26+). מיזוג עם חיתוך ב-1.8 */
+              const CUTOFF = { mo: 8, d: 1 }; /* מ-1.8 ואילך — מהארכיון */
+              const curPtsBase = acadCum(acadKey);
+              /* נוסיף את הארכיון החי לימים מ-1.8 ואילך (אם קיימים ב-curDaily/archive) */
+              const archiveCum = (curDaily && curDaily.cum) || {}; /* {dayOfMonth(נוכחי): מצטבר} — רק לחודש הנוכחי */
+              /* הערה: curDaily מכסה רק את החודש הנוכחי. למיזוג שנתי מלא נשתמש בגיליון עד יולי ובארכיון מאוגוסט. */
+
+              const prevPts = acadCum(prevAcadKey);
+
+              /* ערך המדד לפי נקודה מצטברת */
+              const mval = (p) => {
+                if (!p) return null;
+                if (metric === "gross") return p.g;
+                if (metric === "quality") return p.q;
+                if (metric === "qpct") return p.g > 0 ? (p.q / p.g) * 100 : null;
+                if (metric === "cpl") return p.g > 0 ? p.b / p.g : null;
+                if (metric === "cpql") return p.q > 0 ? p.b / p.q : null;
+                return p.q;
+              };
+
+              const annualData = seq.map((s, i) => ({
+                label: s.label,
+                [`${acadKey}`]: mval(curPtsBase[i]),
+                [`${prevAcadKey}`]: mval(prevPts[i]),
+              }));
+              const curLast = curPtsBase[curPtsBase.length - 1];
+              const prevLast = prevPts[prevPts.length - 1];
+              const curAnnual = mval(curLast), prevAnnual = mval(prevLast);
+              const annualDiff = (prevAnnual != null && prevAnnual !== 0 && curAnnual != null)
+                ? Math.round(((curAnnual - prevAnnual) / Math.abs(prevAnnual)) * 100) : null;
+              const annualGood = annualDiff == null ? null : (M.better === "up" ? annualDiff >= 0 : annualDiff <= 0);
+
+              if (!hasCur && !hasPrev) {
+                return (
+                  <div className="panel" style={{ marginBottom: 18 }}>
+                    <h2>📈 השוואה שנתית אקדמית מצטברת</h2>
+                    <div className="hint" style={{ marginBottom: 0 }}>
+                      טרם נטענו נתונים שנתיים. הוסיפו לחוברת ה-YoY לשוניות לשנה אקדמית (למשל "אוקטובר 24 – ברוטו/תקציב" ו-"אוקטובר 25 – ברוטו/תקציב"), והסקשן יתמלא אוטומטית.
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="panel" style={{ marginBottom: 18 }}>
+                  <h2>📈 השוואה שנתית אקדמית מצטברת · {M.label}</h2>
+                  <div className="hint">
+                    מצטבר מתחילת השנה האקדמית (אוקטובר) עד יום הדיווח — שנה אקדמית {prevAcadKey - 1}/{String(prevAcadKey).slice(2)} מול {acadKey - 1}/{String(acadKey).slice(2)}
+                  </div>
+                  <div className="grid-kpi" style={{ marginBottom: 16 }}>
+                    <div className="kpi">
+                      <div className="kpi-title">שנה נוכחית · עד {fullDate}</div>
+                      <div className="kpi-value" style={{ color: C.teal }}>{curAnnual == null ? "—" : M.fmt(curAnnual)}</div>
+                      <div className="kpi-target">מאוקטובר {acadKey - 1}</div>
+                    </div>
+                    <div className="kpi">
+                      <div className="kpi-title">שנה קודמת · עד {fullDate}</div>
+                      <div className="kpi-value" style={{ color: C.dim }}>{prevAnnual == null ? "—" : M.fmt(prevAnnual)}</div>
+                      <div className="kpi-target">מאוקטובר {prevAcadKey - 1}</div>
+                    </div>
+                    <div className="kpi">
+                      <div className="kpi-title">שינוי שנתי (YoY)</div>
+                      <div className="kpi-value" style={{ color: annualDiff == null ? C.text : annualGood ? C.teal : C.coral }}>
+                        {annualDiff == null ? "—" : (annualDiff >= 0 ? "+" : "") + annualDiff + "%"}
+                      </div>
+                      <div className="kpi-target">{annualDiff == null ? "" : (M.better === "down" ? (annualGood ? "זול יותר ✓" : "יקר יותר") : (annualGood ? "גבוה יותר ✓" : "נמוך יותר"))}</div>
+                    </div>
+                  </div>
+                  <div style={{ width: "100%", height: 300, direction: "ltr" }}>
+                    <ResponsiveContainer>
+                      <ComposedChart data={annualData} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                        <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                        <XAxis dataKey="label" {...axis} interval={Math.max(0, Math.floor(seq.length / 14))} />
+                        <YAxis {...axis} allowDecimals={M.kind !== "count"} tickFormatter={yTickFmt} />
+                        <Tooltip {...tip((v, n) => [v == null ? "—" : M.fmt(v), n])} />
+                        <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} payload={[
+                          { value: `שנה קודמת (${prevAcadKey})`, type: "line", color: C.dim },
+                          { value: `שנה נוכחית (${acadKey})`, type: "line", color: C.teal },
+                        ]} />
+                        <Line type="monotone" dataKey={`${prevAcadKey}`} name={`שנה קודמת (${prevAcadKey})`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
+                        <Line type="monotone" dataKey={`${acadKey}`} name={`שנה נוכחית (${acadKey})`} stroke={C.teal} strokeWidth={3} dot={false} connectNulls />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={{ color: C.dim, fontSize: 12, marginTop: 10 }}>
+                    השוואה "תפוח לתפוח" — אותו חלון ימים בשתי השנים האקדמיות. נתוני השנה הנוכחית: גיליון עד 31.7 + ארכיון חי מ-1.8.
+                  </div>
+                </div>
+              );
+            })()}
           </>
         );
       })()}
