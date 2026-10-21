@@ -1549,7 +1549,16 @@ export default function App() {
             if (!silent) {
               const budgetOk = Object.keys(budget).length > 0;
               const years = Object.keys(leads).sort().join(", ");
-              setStatus({ kind: "ok", msg: `חוברת ה-YoY נטענה (שנים: ${years}${budgetOk ? " · לידים + תקציב" : " · לידים בלבד"})` });
+              if (budgetOk) {
+                setStatus({ kind: "ok", msg: `חוברת ה-YoY נטענה (שנים: ${years} · לידים + תקציב)` });
+              } else {
+                /* דיאגנוסטיקה: שורת הכותרת של כל לשונית, וסיווג לידים/תקציב */
+                const diag = sheets.map((s) => {
+                  const hdr = (s.csv.split("\n").find((l) => /תאריך|date|cost|עלות/i.test(l)) || s.csv.split("\n")[0] || "").slice(0, 45);
+                  return `[${isLeads(s) ? "L" : isBudget(s) ? "B" : "?"}] ${hdr}`;
+                }).join("  ||  ");
+                setStatus({ kind: "err", msg: `נטען לידים אך לא תקציב. כותרות הלשוניות: ${diag}` });
+              }
             }
             return;
           }
