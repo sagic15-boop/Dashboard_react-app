@@ -1502,38 +1502,59 @@ export default function App() {
           const sheets = wb.SheetNames.map((name) => ({ name, csv: XLSX.utils.sheet_to_csv(wb.Sheets[name]) }));
           const isLeads = (s) => s.csv.includes("תאריך") && s.csv.includes("איכות");
           const isBudget = (s) => /cost|עלות|תקציב|spend/i.test((s.csv.split("\n")[0] || "")) || /תקציב|cost|spend/i.test(s.name);
-          /* שנה אקדמית: אוקטובר → ספטמבר. השם מתחיל ב"אוקטובר NN".
-             מפתח השנה = שנת הסיום (אוקטובר 24 → ספטמבר 25 → מפתח 2025; אוקטובר 25 → 2026). */
-          const yearKeyOf = (name) => {
-            const m = name.match(/אוקטובר\s*(\d{2})/); /* שנת ההתחלה בשם */
-            if (!m) return null;
-            return 2000 + parseInt(m[1], 10) + 1; /* אוק'24 → 2025, אוק'25 → 2026 */
-          };
-          /* מאחדים את התוצאות של כל הקבוצות למבנה { year: {...} } */
+          /* חשוב: בייצוא, שמות הלשוניות נחתכים ל-31 תווים (וחלקן אף נקראות "גיליון4/5/6"),
+             אז אי אפשר לסמוך על השם. מזהים הכל לפי התוכן:
+             - סוג: עמודת "איכות" = לידים · עמודת "Cost" = תקציב
+             - שנה אקדמית: מתוך התאריכים בפועל (אוקטובר של שנה X → מפתח X+1)
+             - ברוטו מול תקינים: לפי מספר השורות (ברוטו >> תקינים) */
           const leads = {}, budget = {};
-          const groups = {}; /* yearKey → {leadsCsv, budgetCsv} */
-          /* חשוב: שמות לשוניות נחתכים ל-31 תווים בייצוא, אז כולם נראים זהים עד "אוקטובר NN".
-             לכן מסווגים ברוטו/תקציב/תקינים לפי התוכן, לא לפי השם. */
+          const groups = {}; /* yearKey → {leadsCandidates:[], budgetCandidates:[]} */
           const grossCount = (csv) => (csv.match(/\n/g) || []).length;
-          const hasILS = (csv) => /ils|₪|שקל|nis/i.test(csv.split("\n")[0] || ""); /* כותרת עם עמודת שקלים */
-          for (const s of sheets) {
-            const yk = yearKeyOf(s.name);
-            if (!yk) continue;
-            groups[yk] = groups[yk] || {};
-            if (isBudget(s) && !isLeads(s)) {
-              /* אוספים את כל מועמדי התקציב; נבחר את הטוב בסוף (עדיפות ל-ILS, ואז למרבה השורות) */
-              groups[yk].budgetCandidates = groups[yk].budgetCandidates || [];
-              groups[yk].budgetCandidates.push(s.csv);
-            } else if (isLeads(s)) {
-              if (!groups[yk].leadsCsv || grossCount(s.csv) > grossCount(groups[yk].leadsCsv)) groups[yk].leadsCsv = s.csv;
+          const hasILS = (csv) => /ils|₪|שקל|nis/i.test(csv.split("\n")[0] || "");
+
+          /* זיהוי מפתח השנה האקדמית מתוך התאריך המוקדם ביותר בלשונית */
+          const acadKeyFromContent = (csv, isBud) => {
+            const rows = Papa.parse(csv).data;
+            let hdrIdx = -1, dCol = -1;
+            for (let i = 0; i < Math.min(rows.length, 8); i++) {
+              const cells = rows[i].map((c) => String(c || "").trim());
+              const dc = cells.findIndex((c) => /date|תאריך/i.test(c));
+              if (dc !== -1) { hdrIdx = i; dCol = dc; break; }
             }
+            if (hdrIdx === -1) return null;
+            const sample = rows.slice(hdrIdx + 1, hdrIdx + 400).map((r) => r[dCol]);
+            const order = _detectDateOrder(sample);
+            let minY = 9999, minMo = 13;
+            for (let i = hdrIdx + 1; i < rows.length; i++) {
+              const dt = _yoyParseDate(rows[i][dCol], order);
+              if (!dt) continue;
+              if (dt.y < minY || (dt.y === minY && dt.mo < minMo)) { minY = dt.y; minMo = dt.mo; }
+            }
+            if (minY === 9999) return null;
+            /* תאריך מוקדם באוקטובר-דצמבר של שנה X → שנה אקדמית X+1; אחרת → השנה עצמה */
+            return minMo >= 10 ? minY + 1 : minY;
+          };
+
+          for (const s of sheets) {
+            const bud = isBudget(s) && !isLeads(s);
+            if (!bud && !isLeads(s)) continue; /* לא לידים ולא תקציב — מדלגים (למשל SupermetricsQueries) */
+            const yk = acadKeyFromContent(s.csv, bud);
+            if (!yk) continue;
+            groups[yk] = groups[yk] || { leadsCandidates: [], budgetCandidates: [] };
+            if (bud) groups[yk].budgetCandidates.push(s.csv);
+            else groups[yk].leadsCandidates.push(s.csv);
           }
-          /* בחירת לשונית התקציב הטובה ביותר לכל שנה: עדיפות לעמודת ₪, ואז למי שמניבה הכי הרבה שורות נתונים */
+          /* לכל שנה: ברוטו = לשונית הלידים עם הכי הרבה שורות · תקציב = עדיפות ל-ILS ואז לרוב השורות */
           for (const yk of Object.keys(groups)) {
-            const cands = groups[yk].budgetCandidates || [];
-            if (!cands.length) continue;
-            cands.sort((a, b) => (hasILS(b) ? 1 : 0) - (hasILS(a) ? 1 : 0) || grossCount(b) - grossCount(a));
-            groups[yk].budgetCsv = cands[0];
+            const g = groups[yk];
+            if (g.leadsCandidates.length) {
+              g.leadsCandidates.sort((a, b) => grossCount(b) - grossCount(a));
+              g.leadsCsv = g.leadsCandidates[0];
+            }
+            if (g.budgetCandidates.length) {
+              g.budgetCandidates.sort((a, b) => (hasILS(b) ? 1 : 0) - (hasILS(a) ? 1 : 0) || grossCount(b) - grossCount(a));
+              g.budgetCsv = g.budgetCandidates[0];
+            }
           }
           for (const [yk, g] of Object.entries(groups)) {
             const ykNum = +yk;
