@@ -308,6 +308,8 @@ function parseReport(csvText) {
     else if (label.startsWith("מימוש תקציב")) out.meta.utilPct = toPct(val);
     else if (label === "קמפיין") out.meta.month = String(val || "").trim();
     else if (label.startsWith("מועד דיווח")) out.meta.reportDate = String(val || "").trim();
+    else if (label.startsWith("מועד ירידה")) out.meta.endDate = String(val || "").trim();
+    else if (label.startsWith("תאריך עליה") || label.startsWith("תאריך עלייה")) out.meta.startDate = String(val || "").trim();
   }
 
   /* --- ריכוז עליון: בפועל / יעד --- */
@@ -2781,11 +2783,23 @@ export default function App() {
       {/* ---------- YoY · השוואת שנים (תת-ניווט בתוך "מבט על") ---------- */}
       {board === "summary" && overviewTab === "yoy" && (() => {
         const now = new Date();
-        const reportDate = new Date(now); reportDate.setDate(reportDate.getDate() - 1);
-        const y = reportDate.getFullYear(), prevY = y - 1;
-        const mo = reportDate.getMonth() + 1, dayOfMonth = reportDate.getDate();
+        /* החודש הפעיל נקבע לפי "מועד ירידה" מהדוח (לא לפי שעון המחשב) — כך ימי ההשלמה בתחילת חודש
+           לא קופצים מוקדם מדי לחודש הבא. "מועד ירידה" = סוף החודש של הדוח (למשל 31/10/2026). */
+        const parseHeDate = (s) => {
+          const m = String(s || "").match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/);
+          if (!m) return null; let y2 = m[3]; y2 = y2.length === 2 ? "20" + y2 : y2;
+          return { d: +m[1], mo: +m[2], y: +y2 };
+        };
+        const endMeta = data.meta && parseHeDate(data.meta.endDate);          /* מועד ירידה */
+        const repMeta = data.meta && parseHeDate(data.meta.reportDate);        /* מועד דיווח (ליום הנוכחי) */
+        /* החודש והשנה מ"מועד ירידה"; יום הדיווח מ"מועד דיווח" (עד איזה יום הנתונים מעודכנים) */
+        const activeMo = endMeta ? endMeta.mo : (new Date(now.getTime() - 864e5)).getMonth() + 1;
+        const activeY = endMeta ? endMeta.y : (new Date(now.getTime() - 864e5)).getFullYear();
+        const reportDay = repMeta ? repMeta.d : (new Date(now.getTime() - 864e5)).getDate();
+        const y = activeY, prevY = y - 1;
+        const mo = activeMo, dayOfMonth = reportDay;
         const mm = String(mo).padStart(2, "0");
-        const heMonth = reportDate.toLocaleDateString("he-IL", { month: "long" });
+        const heMonth = new Date(y, mo - 1, 1).toLocaleDateString("he-IL", { month: "long" });
         const fullDate = `${dayOfMonth}.${mo}`;
 
         /* מפתח השנה האקדמית שמכיל את החודש הנוכחי אשתקד.
@@ -2877,12 +2891,19 @@ export default function App() {
           }
           return d === dayOfMonth ? curVal : null; /* שאר המדדים: נקודת היום בלבד */
         };
+        /* תחזית יומית: הקצב = לידים ÷ היום-בחודש של הדיווח (מתחילת החודש).
+           הדוח כולל את כל הלידים מתחילת החודש, כולל ימים שעבדו עליהם מאוחר — לכן מחלקים בכל הימים. */
+        const daysElapsedD = Math.max(dayOfMonth, 1);
+        const dailyRateD = metric === "quality" ? (curVal || 0) / daysElapsedD : 0;
         const chartData = histSeries.map((r) => ({
           day: `${String(r.day).padStart(2, "0")}.${mo}`,
           [`${prevY}`]: r.val,
           [`${prevY}_daily`]: r.dayVal,
           [`${y}`]: curCumVal(r.day),
           [`${y}_daily`]: cdDaily[r.day] != null ? cdDaily[r.day] : null,
+          /* קו תחזית: מתחיל ביום הדיווח (ערך = curVal), ועולה בקצב היומי עד סוף החודש */
+          [`${y}_forecast`]: (metric === "quality" && r.day >= dayOfMonth && curVal != null)
+            ? Math.round(curVal + dailyRateD * (r.day - dayOfMonth)) : null,
           [`cpql_${prevY}`]: r.cpqlCum,
           [`cpql_${y}`]: (curDaily && curDaily.cpql && curDaily.cpql[r.day] != null) ? curDaily.cpql[r.day] : (r.day === dayOfMonth ? curCPQL : null),
         }));
@@ -2908,20 +2929,24 @@ export default function App() {
             }
             prevMonthQ[m2] = any ? sum : 0;
           }
-          /* השנה: חודשים שהסתיימו + החודש הנוכחי (מהארכיון), והשלמת החודש הנוכחי לפי קצב יומי */
-          const am = yoyArchiveMonthly || {};
-          const curMonthActual = am.monthQ || {};
-          const curMo = am.curMo || mo, curDay = am.curDay || dayOfMonth;
+          /* החודש הנוכחי נקבע לפי החודש הפעיל (מ"מועד ירידה"). הנתון של השנה לחודש הנוכחי
+             מגיע מהרובריקה החיה (curVal / curBase.quality) — לא מהארכיון. */
+          const curMo = mo, curDay = dayOfMonth;
           const curIdx = acadSeq.indexOf(curMo);
+          const am = yoyArchiveMonthly || {};
+          const archMonthQ = am.monthQ || {}; /* חודשים שהסתיימו מהארכיון */
 
-          /* יחס מצטבר עד היום: סך איכותי השנה עד היום ÷ סך אשתקד עד אותה נקודה אקדמית */
+          /* איכותיים של החודש הנוכחי השנה = הרובריקה החיה (תארים+אתר, ללא הארווארד) */
+          const curMonthThisYear = curBase.quality || 0;
+
+          /* יחס מצטבר עד היום: סך השנה עד היום ÷ סך אשתקד עד אותה נקודה אקדמית */
           let curCumToDate = 0, prevCumToDate = 0;
           for (let mi = 0; mi <= curIdx; mi++) {
             const m2 = acadSeq[mi];
-            curCumToDate += (curMonthActual[m2] || 0);
+            curCumToDate += (mi === curIdx) ? curMonthThisYear : (archMonthQ[m2] || 0);
             if (mi < curIdx) prevCumToDate += (prevMonthQ[m2] || 0);
             else {
-              /* החודש הנוכחי: אשתקד עד אותו יום-בחודש בלבד */
+              /* החודש הנוכחי אשתקד — עד אותו יום-בחודש בלבד (תפוח לתפוח) */
               let p = 0;
               for (let d = 1; d <= curDay; d++) { const k = `${String(m2).padStart(2, "0")}-${String(d).padStart(2, "0")}`; if (lm[k]) p += lm[k].quality.total; }
               prevCumToDate += p;
@@ -2929,22 +2954,21 @@ export default function App() {
           }
           const ratio = prevCumToDate > 0 ? curCumToDate / prevCumToDate : 1;
 
-          /* השלמת החודש הנוכחי לפי קצב יומי (מ-CUR_START_DAY עד היום) */
-          const curMonthSoFar = curMonthActual[curMo] || 0;
-          const daysElapsed = Math.max(curDay - (CUR_START_DAY - 1), 1);
-          const dailyRate = curMonthSoFar / daysElapsed;
+          /* השלמת החודש הנוכחי: הקצב = לידים ÷ היום-בחודש (מתחילת החודש), והשלמה לכל ימי החודש */
+          const daysElapsed = Math.max(curDay, 1);
+          const dailyRate = curMonthThisYear / daysElapsed;
           const curMonthDim = new Date((curMo >= 10 ? y - 1 : y), curMo, 0).getDate();
-          const curMonthProjected = Math.round(dailyRate * (curMonthDim - (CUR_START_DAY - 1)));
+          const curMonthProjected = Math.round(dailyRate * curMonthDim);
 
           /* בניית הסדרה החודשית */
           const rows = [];
           for (let mi = 0; mi < acadSeq.length; mi++) {
             const m2 = acadSeq[mi];
             const prevV = prevMonthQ[m2];
-            let curV = null, isForecast = false;
-            if (mi < curIdx) curV = curMonthActual[m2] ?? null;           /* חודש שהסתיים — אמיתי */
+            let curV = null;
+            if (mi < curIdx) curV = archMonthQ[m2] ?? null;               /* חודש שהסתיים — מהארכיון */
             else if (mi === curIdx) curV = curMonthProjected;             /* חודש נוכחי — מושלם לפי קצב */
-            else { curV = Math.round(prevV * ratio); isForecast = true; } /* חודשים עתידיים — תחזית */
+            else curV = Math.round(prevV * ratio);                        /* חודשים עתידיים — תחזית */
             rows.push({ mo: m2, name: MONTH_NAMES[m2], prev: prevV, cur: mi <= curIdx ? curV : null, forecast: mi >= curIdx ? curV : null });
           }
           /* מצטבר */
@@ -3122,6 +3146,7 @@ export default function App() {
                     })}
                     <Line type="monotone" dataKey={`${prevY}`} name={`${prevY} (אשתקד)`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
                     <Line type="monotone" dataKey={`${y}`} name={`${y} (השנה)`} stroke={C.teal} strokeWidth={3} dot={{ r: 4 }} connectNulls />
+                    {metric === "quality" && <Line type="monotone" dataKey={`${y}_forecast`} name={`${y} · תחזית`} stroke={C.amber} strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />}
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
