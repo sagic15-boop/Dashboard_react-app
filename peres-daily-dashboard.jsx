@@ -1137,6 +1137,8 @@ export default function App() {
   const [yoyLink, setYoyLink] = useState("");             /* קישור חוברת ה-YoY (כוללת את שתי הלשוניות) */
   const [yoyUpdatedAt, setYoyUpdatedAt] = useState(null);
   const [yoyMetric, setYoyMetric] = useState("quality");  /* gross | quality | qpct | cpl | cpql */
+  const [yoyView, setYoyView] = useState("monthly");      /* daily | monthly — תצוגת הגרף המצטבר */
+  const [yoyArchiveMonthly, setYoyArchiveMonthly] = useState(null); /* מצטבר חודשי של השנה הנוכחית מהארכיון */
   const [overviewTab, setOverviewTab] = useState("trends"); /* trends | yoy — תת-ניווט בתוך "מבט על" */
   const [curDaily, setCurDaily] = useState(null);         /* {day: total} — לידים איכותיים יומיים של השנה, מהארכיון */
   const [userEvents, setUserEvents] = useState([]);       /* אירועים ידניים לציר ה-YoY */
@@ -1718,6 +1720,43 @@ export default function App() {
         lastQ = rec.q;
       }
       setCurDaily({ daily, cum: cumCur, cpql: cpqlCur });
+
+      /* --- מצטבר חודשי של השנה הנוכחית מהארכיון (אוקטובר→החודש הנוכחי) --- */
+      /* לכל חודש אקדמי: סך איכותיים (תארים+אתר, ללא הארווארד) באותו חודש. */
+      const acadMonthsSeq = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+      const rd2 = new Date(); rd2.setDate(rd2.getDate() - 1);
+      const rY = rd2.getFullYear(), rMo = rd2.getMonth() + 1, rDay = rd2.getDate();
+      const curIdx = acadMonthsSeq.indexOf(rMo);
+      const monthQ = {}; /* mo → סך איכותיים באותו חודש */
+      for (let mi = 0; mi <= curIdx; mi++) {
+        const m2 = acadMonthsSeq[mi];
+        const yForM = (m2 >= 10) ? rY - 1 : rY;
+        const dim = new Date(yForM, m2, 0).getDate();
+        const lastD = (mi === curIdx) ? rDay : dim;
+        let sum = 0;
+        for (let d = 1; d <= lastD; d++) {
+          const iso = `${yForM}-${String(m2).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          const main = await store.get(dayKey(iso));
+          const site = await store.get("peres:siteday:" + iso);
+          /* יומי = מצטבר(יום) - מצטבר(יום-1); כאן פשוט סוכמים את הדלתא דרך המצטבר של החודש */
+          void main; void site;
+        }
+        /* חישוב מדויק: מצטבר בסוף החודש פחות מצטבר בתחילתו */
+        const firstISO = `${yForM}-${String(m2).padStart(2, "0")}-01`;
+        const lastISO = `${yForM}-${String(m2).padStart(2, "0")}-${String(lastD).padStart(2, "0")}`;
+        const cumAt = async (iso) => {
+          const mn = await store.get(dayKey(iso)), st = await store.get("peres:siteday:" + iso);
+          if (!mn && !st) return null;
+          let q = 0;
+          if (mn && mn.data) { const rt = reportTotals(mn.data); if (rt) q += (rt.degQuality || 0); }
+          if (st && st.data && st.data.summary) q += (st.data.summary.actual.quality || 0);
+          return q;
+        };
+        /* הדוח מצטבר מתחילת החודש, אז המצטבר בסוף החודש = הסך החודשי */
+        const endCum = await cumAt(lastISO);
+        monthQ[m2] = endCum != null ? endCum : (sum || null);
+      }
+      setYoyArchiveMonthly({ monthQ, curMo: rMo, curDay: rDay });
     })();
   }, [board, overviewTab, updatedAt, siteUpdatedAt, dayIndex]);
 
@@ -2851,6 +2890,78 @@ export default function App() {
         const yoyDiff = (histAtDay.val != null && histAtDay.val !== 0 && curVal != null)
           ? Math.round(((curVal - histAtDay.val) / Math.abs(histAtDay.val)) * 100) : null;
         const yoyGood = yoyDiff == null ? null : (M.better === "up" ? yoyDiff >= 0 : yoyDiff <= 0);
+
+        /* ===== תצוגה חודשית + תחזית (רק למדד איכותיים) ===== */
+        const MONTH_NAMES = { 10: "אוקטובר", 11: "נובמבר", 12: "דצמבר", 1: "ינואר", 2: "פברואר", 3: "מרץ", 4: "אפריל", 5: "מאי", 6: "יוני", 7: "יולי", 8: "אוגוסט", 9: "ספטמבר" };
+        const acadSeq = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        const monthlyData = (() => {
+          if (metric !== "quality") return null;
+          /* אשתקד: סך איכותי לכל חודש אקדמי מגיליון ה-YoY (lastKey מכיל את כל 12 החודשים) */
+          const lm = (leadsYoY && leadsYoY[lastKey]) || {};
+          const prevMonthQ = {};
+          for (const m2 of acadSeq) {
+            let sum = 0, any = false;
+            const dim = new Date(2024, m2, 0).getDate() + 1; /* מספיק ימים */
+            for (let d = 1; d <= 31; d++) {
+              const k = `${String(m2).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+              if (lm[k]) { sum += lm[k].quality.total; any = true; }
+            }
+            prevMonthQ[m2] = any ? sum : 0;
+          }
+          /* השנה: חודשים שהסתיימו + החודש הנוכחי (מהארכיון), והשלמת החודש הנוכחי לפי קצב יומי */
+          const am = yoyArchiveMonthly || {};
+          const curMonthActual = am.monthQ || {};
+          const curMo = am.curMo || mo, curDay = am.curDay || dayOfMonth;
+          const curIdx = acadSeq.indexOf(curMo);
+
+          /* יחס מצטבר עד היום: סך איכותי השנה עד היום ÷ סך אשתקד עד אותה נקודה אקדמית */
+          let curCumToDate = 0, prevCumToDate = 0;
+          for (let mi = 0; mi <= curIdx; mi++) {
+            const m2 = acadSeq[mi];
+            curCumToDate += (curMonthActual[m2] || 0);
+            if (mi < curIdx) prevCumToDate += (prevMonthQ[m2] || 0);
+            else {
+              /* החודש הנוכחי: אשתקד עד אותו יום-בחודש בלבד */
+              let p = 0;
+              for (let d = 1; d <= curDay; d++) { const k = `${String(m2).padStart(2, "0")}-${String(d).padStart(2, "0")}`; if (lm[k]) p += lm[k].quality.total; }
+              prevCumToDate += p;
+            }
+          }
+          const ratio = prevCumToDate > 0 ? curCumToDate / prevCumToDate : 1;
+
+          /* השלמת החודש הנוכחי לפי קצב יומי (מ-CUR_START_DAY עד היום) */
+          const curMonthSoFar = curMonthActual[curMo] || 0;
+          const daysElapsed = Math.max(curDay - (CUR_START_DAY - 1), 1);
+          const dailyRate = curMonthSoFar / daysElapsed;
+          const curMonthDim = new Date((curMo >= 10 ? y - 1 : y), curMo, 0).getDate();
+          const curMonthProjected = Math.round(dailyRate * (curMonthDim - (CUR_START_DAY - 1)));
+
+          /* בניית הסדרה החודשית */
+          const rows = [];
+          for (let mi = 0; mi < acadSeq.length; mi++) {
+            const m2 = acadSeq[mi];
+            const prevV = prevMonthQ[m2];
+            let curV = null, isForecast = false;
+            if (mi < curIdx) curV = curMonthActual[m2] ?? null;           /* חודש שהסתיים — אמיתי */
+            else if (mi === curIdx) curV = curMonthProjected;             /* חודש נוכחי — מושלם לפי קצב */
+            else { curV = Math.round(prevV * ratio); isForecast = true; } /* חודשים עתידיים — תחזית */
+            rows.push({ mo: m2, name: MONTH_NAMES[m2], prev: prevV, cur: mi <= curIdx ? curV : null, forecast: mi >= curIdx ? curV : null });
+          }
+          /* מצטבר */
+          let cp = 0, cc = 0;
+          const cum = rows.map((r) => {
+            cp += r.prev || 0;
+            const actualOrProj = (r.cur != null ? r.cur : r.forecast) || 0;
+            cc += actualOrProj;
+            return { name: r.name, [`${prevY}`]: cp, [`${y}`]: r.cur != null ? cc : null, forecast: r.forecast != null ? cc : null };
+          });
+          /* נקודת החיבור: החודש הנוכחי צריך להופיע גם ב-cur וגם ב-forecast כדי שהקווים יתחברו */
+          const connIdx = curIdx;
+          if (cum[connIdx]) cum[connIdx].forecast = cum[connIdx][`${y}`];
+          const finalCur = cum[cum.length - 1].forecast;
+          const finalPrev = cum[cum.length - 1][`${prevY}`];
+          return { cum, ratio, finalCur, finalPrev, curMonthName: MONTH_NAMES[curMo] };
+        })();
         const tip = (fmt) => ({
           contentStyle: { background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, direction: "rtl", color: C.text },
           labelStyle: { color: C.text, fontWeight: 700 }, itemStyle: { color: C.text }, formatter: fmt,
@@ -2934,7 +3045,52 @@ export default function App() {
               </div>
             </div>
 
-            <div className="panel" style={{ marginBottom: 18 }}>
+            {metric === "quality" && monthlyData && (
+              <div className="panel" style={{ marginBottom: 18 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <h2>📅 {M.label} מצטבר שנתי · {y} מול {prevY} + תחזית</h2>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className={`subtab ${yoyView === "monthly" ? "on" : ""}`} onClick={() => setYoyView("monthly")}>חודשי + תחזית</button>
+                    <button className={`subtab ${yoyView === "daily" ? "on" : ""}`} onClick={() => setYoyView("daily")}>יומי (חודש נוכחי)</button>
+                  </div>
+                </div>
+                {yoyView === "monthly" && (
+                  <>
+                    <div className="hint">
+                      מצטבר לכל חודש לאורך השנה האקדמית · קו מקווקו = תחזית לפי הקצב הנוכחי והיחס מול אשתקד ({Math.round(monthlyData.ratio * 100)}%)
+                    </div>
+                    <div style={{ width: "100%", height: 320, direction: "ltr" }}>
+                      <ResponsiveContainer>
+                        <ComposedChart data={monthlyData.cum} margin={{ top: 6, right: 8, left: 8, bottom: 0 }}>
+                          <CartesianGrid stroke={C.panelSoft} vertical={false} />
+                          <XAxis dataKey="name" {...axis} />
+                          <YAxis {...axis} allowDecimals={false} />
+                          <Tooltip {...tip((v, n) => [v == null ? "—" : num(v), n])} />
+                          <Legend wrapperStyle={{ direction: "rtl", fontSize: 12 }} payload={[
+                            { value: `${prevY} (אשתקד)`, type: "line", color: C.dim },
+                            { value: `${y} (השנה)`, type: "line", color: C.teal },
+                            { value: `${y} · תחזית`, type: "line", color: C.amber },
+                          ]} />
+                          <Line type="monotone" dataKey={`${prevY}`} name={`${prevY} (אשתקד)`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
+                          <Line type="monotone" dataKey={`${y}`} name={`${y} (השנה)`} stroke={C.teal} strokeWidth={3} dot={{ r: 4 }} connectNulls />
+                          <Line type="monotone" dataKey="forecast" name={`${y} · תחזית`} stroke={C.amber} strokeWidth={2.5} strokeDasharray="6 4" dot={{ r: 3 }} connectNulls />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginTop: 12, fontSize: 13 }}>
+                      <div><span style={{ color: C.dim }}>תחזית לסוף השנה האקדמית: </span><b style={{ color: C.amber }}>{num(monthlyData.finalCur)}</b> לידים איכותיים</div>
+                      <div><span style={{ color: C.dim }}>סוף השנה אשתקד: </span><b style={{ color: C.dim }}>{num(monthlyData.finalPrev)}</b></div>
+                      <div><span style={{ color: C.dim }}>יחס נוכחי מול אשתקד: </span><b style={{ color: monthlyData.ratio >= 1 ? C.teal : C.coral }}>{Math.round(monthlyData.ratio * 100)}%</b></div>
+                    </div>
+                  </>
+                )}
+                {yoyView === "daily" && (
+                  <div style={{ color: C.dim, fontSize: 12, marginTop: 8 }}>הגרף היומי המפורט מוצג למטה ⬇️</div>
+                )}
+              </div>
+            )}
+
+            <div className="panel" style={{ marginBottom: 18, display: (metric === "quality" && monthlyData && yoyView === "monthly") ? "none" : "block" }}>
               <h2>📅 {M.label} מצטבר · {heMonth}: {y} מול {prevY}</h2>
               <div className="hint">
                 קו {prevY} = מצטבר אשתקד · הנקודה של {y} = המצב עד יום הדיווח ({fullDate})
