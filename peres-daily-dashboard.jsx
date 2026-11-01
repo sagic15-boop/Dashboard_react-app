@@ -580,6 +580,45 @@ function parseYoYBudget(csvText, forceYear) {
 }
 export { parseYoYBudget };
 
+/* לשונית יעדים: חודש (MM/YYYY) · תארים · אתר · אחוז איכות - תארים · אחוז איכות אתר
+   מחזיר { "YYYY-MM": { deg, site, qDeg, qSite } } (אחוזים כמספר, למשל 11.9) */
+function parseYoYTargets(csvText) {
+  const rows = Papa.parse(csvText).data;
+  let hdr = -1, ci = {};
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const c = rows[i].map((x) => String(x || "").trim());
+    const mCol = c.findIndex((x) => x === "חודש");
+    const dCol = c.findIndex((x) => x === "תארים");
+    const sCol = c.findIndex((x) => x === "אתר");
+    if (mCol !== -1 && dCol !== -1 && sCol !== -1) {
+      hdr = i;
+      ci = {
+        m: mCol, d: dCol, s: sCol,
+        qd: c.findIndex((x) => x.includes("איכות") && x.includes("תארים")),
+        qs: c.findIndex((x) => x.includes("איכות") && x.includes("אתר")),
+      };
+      break;
+    }
+  }
+  if (hdr === -1) return null;
+  const out = {};
+  for (let i = hdr + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const mm = String(r[ci.m] || "").trim().match(/^(\d{1,2})[\/.\-](\d{4})$/);
+    if (!mm) continue;
+    const key = `${mm[2]}-${String(+mm[1]).padStart(2, "0")}`;
+    const pctOf = (v) => { const n = toNum(v); if (n == null) return null; return String(v).includes("%") ? n : (n <= 1 ? n * 100 : n); };
+    out[key] = {
+      deg: toNum(r[ci.d]) || 0,
+      site: toNum(r[ci.s]) || 0,
+      qDeg: ci.qd !== -1 ? pctOf(r[ci.qd]) : null,
+      qSite: ci.qs !== -1 ? pctOf(r[ci.qs]) : null,
+    };
+  }
+  return Object.keys(out).length ? out : null;
+}
+export { parseYoYTargets };
+
 /* חגים עבריים לחודש גרגוריאני נתון — מזוהים דרך לוח השנה העברי של הדפדפן.
    מחזיר [{day, label}] לימים שהם חג/ערב חג באותו חודש. */
 function hebrewHolidaysForMonth(gy, gm) {
@@ -1135,13 +1174,15 @@ export default function App() {
   const [cloudUp, setCloudUp] = useState(false);          /* האם אחסון הענן זמין */
   const [cloudBusy, setCloudBusy] = useState(false);
   const [yoyData, setYoyData] = useState(null);           /* לידים: { year: { "MM-DD": {gross, quality} } } */
-  const [yoyBudget, setYoyBudget] = useState(null);       /* תקציב: { year: { "MM-DD": {digital,site,total} } } */
+  const [yoyBudget, setYoyBudget] = useState(null);
+  const [yoyTargets, setYoyTargets] = useState(null);     /* יעדים: { "YYYY-MM": {deg, site, qDeg, qSite} } */
+  const [coreView, setCoreView] = useState("month");      /* month | ytd — טוגל הפילוח בבלוק הליבה */       /* תקציב: { year: { "MM-DD": {digital,site,total} } } */
   const [yoyLink, setYoyLink] = useState("");             /* קישור חוברת ה-YoY (כוללת את שתי הלשוניות) */
   const [yoyUpdatedAt, setYoyUpdatedAt] = useState(null);
   const [yoyMetric, setYoyMetric] = useState("quality");  /* gross | quality | qpct | cpl | cpql */
   const [yoyView, setYoyView] = useState("monthly");      /* daily | monthly — תצוגת הגרף המצטבר */
   const [yoyArchiveMonthly, setYoyArchiveMonthly] = useState(null); /* מצטבר חודשי של השנה הנוכחית מהארכיון */
-  const [overviewTab, setOverviewTab] = useState("trends"); /* trends | yoy — תת-ניווט בתוך "מבט על" */
+  const [overviewTab, setOverviewTab] = useState("yoy"); /* trends | yoy — תת-ניווט בתוך "מבט על" */
   const [curDaily, setCurDaily] = useState(null);         /* {day: total} — לידים איכותיים יומיים של השנה, מהארכיון */
   const [userEvents, setUserEvents] = useState([]);       /* אירועים ידניים לציר ה-YoY */
   const [evName, setEvName] = useState("");
@@ -1251,7 +1292,7 @@ export default function App() {
       const yoyLinkSaved = await store.get("peres:yoy:link");
       if (yoyLinkSaved) setYoyLink(yoyLinkSaved);
       const yoySaved = await store.get("peres:yoy:data");
-      if (yoySaved && yoySaved.byYear) { setYoyData(yoySaved.byYear); setYoyBudget(yoySaved.budget || null); setYoyUpdatedAt(new Date(yoySaved.savedAt)); }
+      if (yoySaved && yoySaved.byYear) { setYoyData(yoySaved.byYear); setYoyBudget(yoySaved.budget || null); setYoyTargets(yoySaved.targets || null); setYoyUpdatedAt(new Date(yoySaved.savedAt)); }
       const evSaved = await store.get("peres:events");
       if (Array.isArray(evSaved)) setUserEvents(evSaved);
       const savedAuto = await store.get("peres:autosync");
@@ -1485,11 +1526,12 @@ export default function App() {
   }, [loadSiteCsv, refreshTrend]);
 
   /* ---------- YoY: משיכת גיליון ההשוואה ההיסטורי (2025) ---------- */
-  const saveYoY = useCallback(async (leads, budget) => {
+  const saveYoY = useCallback(async (leads, budget, targets) => {
     const now = new Date().toISOString();
-    await store.set("peres:yoy:data", { savedAt: now, byYear: leads, budget: budget || null });
+    await store.set("peres:yoy:data", { savedAt: now, byYear: leads, budget: budget || null, targets: targets || null });
     setYoyData(leads);
     setYoyBudget(budget || null);
+    setYoyTargets(targets || null);
     setYoyUpdatedAt(new Date(now));
   }, []);
 
@@ -1577,13 +1619,16 @@ export default function App() {
             if (l) Object.assign(leads, l);
             if (b) Object.assign(budget, b);
           }
+          /* יעדים — לשונית עם כותרות חודש / תארים / אתר */
+          let targets = null;
+          for (const s of sheets) { const t = parseYoYTargets(s.csv); if (t) { targets = t; break; } }
           if (Object.keys(leads).length) {
-            await saveYoY(leads, Object.keys(budget).length ? budget : null);
+            await saveYoY(leads, Object.keys(budget).length ? budget : null, targets);
             await store.set("peres:yoy:link", theLink);
             if (!silent) {
               const budgetOk = Object.keys(budget).length > 0;
               const years = Object.keys(leads).sort().join(", ");
-              setStatus({ kind: "ok", msg: `חוברת ה-YoY נטענה (שנים: ${years}${budgetOk ? " · לידים + תקציב" : " · לידים בלבד"})` });
+              setStatus({ kind: "ok", msg: `חוברת ה-YoY נטענה (שנים: ${years}${budgetOk ? " · לידים + תקציב" : " · לידים בלבד"}${targets ? ` · יעדים ל-${Object.keys(targets).length} חודשים` : " · לא נמצאה לשונית יעדים"})` });
             }
             return;
           }
@@ -1723,42 +1768,55 @@ export default function App() {
       }
       setCurDaily({ daily, cum: cumCur, cpql: cpqlCur });
 
-      /* --- מצטבר חודשי של השנה הנוכחית מהארכיון (אוקטובר→החודש הנוכחי) --- */
-      /* לכל חודש אקדמי: סך איכותיים (תארים+אתר, ללא הארווארד) באותו חודש. */
+      /* --- סיכום חודשי של השנה הנוכחית מהארכיון, בפילוח תארים / אתר (ללא הארווארד) ---
+         לכל חודש שהסתיים לוקחים את הדוח האחרון שמדבר על אותו חודש ("מועד ירידה" באותו חודש),
+         כולל דוחות שעלו בימי ההשלמה בתחילת החודש הבא. */
       const acadMonthsSeq = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9];
       const rd2 = new Date(); rd2.setDate(rd2.getDate() - 1);
       const rY = rd2.getFullYear(), rMo = rd2.getMonth() + 1, rDay = rd2.getDate();
       const curIdx = acadMonthsSeq.indexOf(rMo);
-      const monthQ = {}; /* mo → סך איכותיים באותו חודש */
-      for (let mi = 0; mi <= curIdx; mi++) {
-        const m2 = acadMonthsSeq[mi];
-        const yForM = (m2 >= 10) ? rY - 1 : rY;
-        const dim = new Date(yForM, m2, 0).getDate();
-        const lastD = (mi === curIdx) ? rDay : dim;
-        let sum = 0;
-        for (let d = 1; d <= lastD; d++) {
-          const iso = `${yForM}-${String(m2).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          const main = await store.get(dayKey(iso));
-          const site = await store.get("peres:siteday:" + iso);
-          /* יומי = מצטבר(יום) - מצטבר(יום-1); כאן פשוט סוכמים את הדלתא דרך המצטבר של החודש */
-          void main; void site;
+      const acadStartY = rMo >= 10 ? rY : rY - 1;
+      const monthQ = {}, monthSrc = {}; /* mo → סך איכותיים · mo → {dq, sq, dg, sg} */
+      const endMonthOf = (rec) => {
+        const s = rec && rec.data && rec.data.meta && rec.data.meta.endDate;
+        const mm2 = String(s || "").match(/\d{1,2}[\/.\-](\d{1,2})[\/.\-]\d{2,4}/);
+        return mm2 ? +mm2[1] : null;
+      };
+      const srcOf = (mn, st) => {
+        const o = { dq: 0, sq: 0, dg: 0, sg: 0 };
+        if (mn && mn.data) {
+          const rt = reportTotals(mn.data);
+          if (rt) o.dq = rt.degQuality || 0;
+          o.dg = (mn.data.totalsRow && mn.data.totalsRow.gross != null) ? mn.data.totalsRow.gross : 0;
         }
-        /* חישוב מדויק: מצטבר בסוף החודש פחות מצטבר בתחילתו */
-        const firstISO = `${yForM}-${String(m2).padStart(2, "0")}-01`;
-        const lastISO = `${yForM}-${String(m2).padStart(2, "0")}-${String(lastD).padStart(2, "0")}`;
-        const cumAt = async (iso) => {
-          const mn = await store.get(dayKey(iso)), st = await store.get("peres:siteday:" + iso);
-          if (!mn && !st) return null;
-          let q = 0;
-          if (mn && mn.data) { const rt = reportTotals(mn.data); if (rt) q += (rt.degQuality || 0); }
-          if (st && st.data && st.data.summary) q += (st.data.summary.actual.quality || 0);
-          return q;
-        };
-        /* הדוח מצטבר מתחילת החודש, אז המצטבר בסוף החודש = הסך החודשי */
-        const endCum = await cumAt(lastISO);
-        monthQ[m2] = endCum != null ? endCum : (sum || null);
+        if (st && st.data && st.data.summary) { o.sq = st.data.summary.actual.quality || 0; o.sg = st.data.summary.actual.gross || 0; }
+        return o;
+      };
+      for (let mi = 0; mi < curIdx; mi++) { /* רק חודשים שהסתיימו — החודש הנוכחי מגיע מהנתונים החיים */
+        const m2 = acadMonthsSeq[mi];
+        const yForM = m2 >= 10 ? acadStartY : acadStartY + 1;
+        const dim = new Date(yForM, m2, 0).getDate();
+        const nmY = m2 === 12 ? yForM + 1 : yForM, nm = m2 === 12 ? 1 : m2 + 1;
+        /* מועמדים: 10 הימים הראשונים של החודש הבא (מהמאוחר) ואז ימי החודש עצמו (מהמאוחר) */
+        const cands = [];
+        for (let d = 10; d >= 1; d--) cands.push(`${nmY}-${String(nm).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+        for (let d = dim; d >= 1; d--) cands.push(`${yForM}-${String(m2).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+        let picked = null;
+        for (const iso of cands) {
+          const mn = await store.get(dayKey(iso));
+          if (!mn) continue;
+          const em = endMonthOf(mn);
+          const inMonth = iso.startsWith(`${yForM}-${String(m2).padStart(2, "0")}`);
+          if (em === m2 || (em == null && inMonth)) { picked = iso; break; }
+        }
+        if (!picked) { monthQ[m2] = null; continue; }
+        const mn = await store.get(dayKey(picked));
+        const st = await store.get("peres:siteday:" + picked);
+        const o = srcOf(mn, st);
+        monthSrc[m2] = o;
+        monthQ[m2] = o.dq + o.sq;
       }
-      setYoyArchiveMonthly({ monthQ, curMo: rMo, curDay: rDay });
+      setYoyArchiveMonthly({ monthQ, monthSrc, curMo: rMo, curDay: rDay });
     })();
   }, [board, overviewTab, updatedAt, siteUpdatedAt, dayIndex]);
 
@@ -2993,8 +3051,153 @@ export default function App() {
         const axis = { tick: { fill: C.dim, fontSize: 11 }, stroke: C.line };
         const yTickFmt = (v) => M.kind === "cost" ? "₪" + (v >= 1000 ? Math.round(v / 1000) + "K" : Math.round(v)) : M.kind === "ratio" ? v + "%" : num(v);
 
+        /* ===== בלוק ליבה (תארים + אתר) מול יעד ומול אשתקד ===== */
+        const core = (() => {
+          if (!yoyTargets) return null;
+          const acadStart = mo >= 10 ? y : y - 1;
+          const tKey = (m2) => `${m2 >= 10 ? acadStart : acadStart + 1}-${String(m2).padStart(2, "0")}`;
+          const tg = (m2) => yoyTargets[tKey(m2)] || { deg: 0, site: 0, qDeg: null, qSite: null };
+          const cIdx = acadSeq.indexOf(mo);
+          const dim = new Date(y, mo, 0).getDate();
+          const pace = Math.min(dayOfMonth / dim, 1);
+
+          /* בפועל — החודש הנוכחי מהנתונים החיים */
+          const rt = reportTotals(data);
+          const curM = {
+            dq: rt ? rt.degQuality : 0,
+            sq: siteData && siteData.summary ? (siteData.summary.actual.quality || 0) : 0,
+            dg: data.totalsRow && data.totalsRow.gross != null ? data.totalsRow.gross : (data.summary ? (data.summary.actual.gross || 0) : 0),
+            sg: siteData && siteData.summary ? (siteData.summary.actual.gross || 0) : 0,
+          };
+          /* אשתקד — מגיליון ה-YoY, בפילוח דיגיטל(=תארים) / אתר */
+          const lm = (leadsYoY && leadsYoY[lastKey]) || {};
+          const sumLY = (m2, upto) => {
+            const o = { dq: 0, sq: 0, dg: 0, sg: 0 };
+            for (let d = 1; d <= (upto || 31); d++) {
+              const L = lm[`${String(m2).padStart(2, "0")}-${String(d).padStart(2, "0")}`];
+              if (L) { o.dq += L.quality.digital; o.sq += L.quality.site; o.dg += L.gross.digital; o.sg += L.gross.site; }
+            }
+            return o;
+          };
+          const add = (a, b) => ({ dq: a.dq + b.dq, sq: a.sq + b.sq, dg: a.dg + b.dg, sg: a.sg + b.sg });
+          const lyM = sumLY(mo, dayOfMonth);
+          /* מתחילת השנה: חודשים שהסתיימו (ארכיון / גיליון) + החודש הנוכחי */
+          const arch = (yoyArchiveMonthly && yoyArchiveMonthly.monthSrc) || {};
+          let curY = { ...curM }, lyY = { ...lyM };
+          for (let mi = 0; mi < cIdx; mi++) {
+            const m2 = acadSeq[mi];
+            if (arch[m2]) curY = add(curY, arch[m2]);
+            lyY = add(lyY, sumLY(m2));
+          }
+          /* יעדים: איכותיים + ברוטו משתמע (איכותיים ÷ % איכות) */
+          const impl = (q, pct) => (pct ? q / (pct / 100) : 0);
+          const tPart = (m2, frac) => {
+            const t = tg(m2);
+            return { dq: t.deg * frac, sq: t.site * frac, dg: impl(t.deg, t.qDeg) * frac, sg: impl(t.site, t.qSite) * frac };
+          };
+          const tMonthFull = tPart(mo, 1);
+          const tM = tPart(mo, pace);
+          let tY = { ...tM };
+          for (let mi = 0; mi < cIdx; mi++) tY = add(tY, tPart(acadSeq[mi], 1));
+          const annualTarget = acadSeq.reduce((s, m2) => s + tg(m2).deg + tg(m2).site, 0);
+          const forecast = monthlyData ? monthlyData.finalCur : null;
+          return { curM, curY, lyM, lyY, tM, tY, tMonthFull, annualTarget, forecast, tg, pace };
+        })();
+        /* קו יעד מצטבר בגרף החודשי, וקו קצב יעד בגרף היומי */
+        if (core && monthlyData) {
+          let ct = 0;
+          monthlyData.cum.forEach((row, i) => { const t = core.tg(acadSeq[i]); ct += t.deg + t.site; row.target = ct; });
+        }
+        if (core) {
+          const dimD = new Date(y, mo, 0).getDate();
+          const mTot = core.tMonthFull.dq + core.tMonthFull.sq;
+          chartData.forEach((row) => { const dd = parseInt(row.day, 10); row.target = Math.round(mTot * dd / dimD); });
+        }
+        const pctOf = (a, b) => (b ? Math.round((a / b) * 100) : null);
+        const chg = (a, b) => (b ? Math.round(((a - b) / b) * 100) : null);
+        const sgn = (v) => (v == null ? "—" : (v >= 0 ? "+" : "") + v + "%");
+        const chgCol = (v) => (v == null ? C.dim : v >= 0 ? C.teal : C.coral);
+        const achCol = (v) => (v == null ? C.dim : v >= 100 ? C.teal : v >= 90 ? C.amber : C.coral);
+
         return (
           <>
+            {core ? (() => {
+              const qM = core.curM.dq + core.curM.sq, qY = core.curY.dq + core.curY.sq;
+              const tqM = core.tM.dq + core.tM.sq, tqY = core.tY.dq + core.tY.sq;
+              const lqM = core.lyM.dq + core.lyM.sq, lqY = core.lyY.dq + core.lyY.sq;
+              const gap = core.forecast != null ? core.forecast - core.annualTarget : null;
+              const P = coreView === "month"
+                ? { a: core.curM, t: core.tM, l: core.lyM, label: `החודש עד ${fullDate}` }
+                : { a: core.curY, t: core.tY, l: core.lyY, label: `מתחילת השנה עד ${fullDate}` };
+              const rowsB = [
+                { name: "תארים", a: P.a.dq, t: P.t.dq, l: P.l.dq },
+                { name: "אתר", a: P.a.sq, t: P.t.sq, l: P.l.sq },
+                { name: "סה״כ ליבה", a: P.a.dq + P.a.sq, t: P.t.dq + P.t.sq, l: P.l.dq + P.l.sq, bold: true },
+              ];
+              const qpA = (P.a.dg + P.a.sg) ? ((P.a.dq + P.a.sq) / (P.a.dg + P.a.sg)) * 100 : null;
+              const qpT = (P.t.dg + P.t.sg) ? ((P.t.dq + P.t.sq) / (P.t.dg + P.t.sg)) * 100 : null;
+              const qpL = (P.l.dg + P.l.sg) ? ((P.l.dq + P.l.sq) / (P.l.dg + P.l.sg)) * 100 : null;
+              return (
+                <div className="panel" style={{ marginBottom: 20, borderColor: C.amber }}>
+                  <h2>🎯 ליבה (תארים + אתר) · לידים איכותיים</h2>
+                  <div className="hint">פעילות הליבה שבידיים שלנו — מול יעד ומול אשתקד. יעד החודש מחושב לפי קצב עד יום הדיווח.</div>
+                  <div className="grid-kpi" style={{ marginBottom: 18 }}>
+                    <div className="kpi">
+                      <div className="kpi-title">החודש עד היום ({fullDate})</div>
+                      <div className="kpi-value" style={{ color: C.teal }}>{num(qM)}</div>
+                      <div className="kpi-target">יעד לקצב: {num(Math.round(tqM))} · <b style={{ color: achCol(pctOf(qM, tqM)) }}>{pctOf(qM, tqM) ?? "—"}%</b> · יעד חודשי {num(Math.round(core.tMonthFull.dq + core.tMonthFull.sq))}</div>
+                      <div className="kpi-target">אשתקד עד אותו יום: {num(lqM)} · <b style={{ color: chgCol(chg(qM, lqM)) }}>{sgn(chg(qM, lqM))}</b></div>
+                    </div>
+                    <div className="kpi">
+                      <div className="kpi-title">מתחילת השנה (מאוקטובר)</div>
+                      <div className="kpi-value" style={{ color: C.teal }}>{num(qY)}</div>
+                      <div className="kpi-target">יעד מצטבר: {num(Math.round(tqY))} · <b style={{ color: achCol(pctOf(qY, tqY)) }}>{pctOf(qY, tqY) ?? "—"}%</b></div>
+                      <div className="kpi-target">אשתקד: {num(lqY)} · <b style={{ color: chgCol(chg(qY, lqY)) }}>{sgn(chg(qY, lqY))}</b></div>
+                    </div>
+                    <div className="kpi">
+                      <div className="kpi-title">תחזית לסוף השנה</div>
+                      <div className="kpi-value" style={{ color: C.amber }}>{core.forecast != null ? num(core.forecast) : "—"}</div>
+                      <div className="kpi-target">מול יעד שנתי {num(core.annualTarget)}</div>
+                      <div className="kpi-target">פער: <b style={{ color: gap == null ? C.dim : gap >= 0 ? C.teal : C.coral }}>{gap == null ? "—" : (gap >= 0 ? "+" : "") + num(gap)}</b></div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>פילוח · {P.label}</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className={`subtab ${coreView === "month" ? "on" : ""}`} onClick={() => setCoreView("month")}>החודש</button>
+                      <button className={`subtab ${coreView === "ytd" ? "on" : ""}`} onClick={() => setCoreView("ytd")}>מתחילת השנה</button>
+                    </div>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>מקור</th><th>בפועל</th><th>יעד</th><th>% מימוש</th><th>אשתקד</th><th>שינוי</th></tr></thead>
+                      <tbody>
+                        {rowsB.map((r) => (
+                          <tr key={r.name} style={r.bold ? { background: "rgba(245,184,65,.06)" } : undefined}>
+                            <td style={{ fontWeight: r.bold ? 900 : 700 }}>{r.name}</td>
+                            <td style={{ fontWeight: 700, color: C.teal }}>{num(r.a)}</td>
+                            <td>{num(Math.round(r.t))}</td>
+                            <td style={{ fontWeight: 700, color: achCol(pctOf(r.a, r.t)) }}>{pctOf(r.a, r.t) ?? "—"}%</td>
+                            <td style={{ color: C.dim }}>{num(r.l)}</td>
+                            <td style={{ fontWeight: 700, color: chgCol(chg(r.a, r.l)) }}>{sgn(chg(r.a, r.l))}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ marginTop: 10, fontSize: 13 }}>
+                    <span style={{ color: C.dim }}>% איכות בליבה: </span>
+                    <b style={{ color: qpA != null && qpT != null && qpA >= qpT ? C.teal : C.coral }}>{qpA == null ? "—" : pct(qpA, 1)}</b>
+                    <span style={{ color: C.dim }}> מול יעד {qpT == null ? "—" : pct(qpT, 1)} (אשתקד {qpL == null ? "—" : pct(qpL, 1)})</span>
+                  </div>
+                </div>
+              );
+            })() : (
+              <div className="status" style={{ borderColor: C.amber, color: C.amber }}>
+                🎯 לא נמצאה לשונית יעדים בחוברת ה-YoY (כותרות: חודש / תארים / אתר / אחוז איכות). טענו מחדש את החוברת אחרי הוספת הלשונית.
+              </div>
+            )}
             <div className="status" style={{ borderColor: C.violet, color: C.violet, background: "rgba(154,123,247,.08)" }}>
               ℹ️ תזכורת: החל מ-19.10.2026 שיטת ספירת האיכות בדוחות עודכנה. בהשוואות שחוצות את התאריך הזה, ייתכן הבדל מתודולוגי בין התקופות. · חלק ה-YoY אינו כולל את הארווארד.
             </div>
@@ -3094,10 +3297,12 @@ export default function App() {
                             { value: `${prevY} (אשתקד)`, type: "line", color: C.dim },
                             { value: `${y} (השנה)`, type: "line", color: C.teal },
                             { value: `${y} · תחזית`, type: "line", color: C.amber },
+                            ...(core ? [{ value: "יעד מצטבר", type: "line", color: C.violet }] : []),
                           ]} />
                           <Line type="monotone" dataKey={`${prevY}`} name={`${prevY} (אשתקד)`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
                           <Line type="monotone" dataKey={`${y}`} name={`${y} (השנה)`} stroke={C.teal} strokeWidth={3} dot={{ r: 4 }} connectNulls />
                           <Line type="monotone" dataKey="forecast" name={`${y} · תחזית`} stroke={C.amber} strokeWidth={2.5} strokeDasharray="6 4" dot={{ r: 3 }} connectNulls />
+                          {core && <Line type="monotone" dataKey="target" name="יעד מצטבר" stroke={C.violet} strokeWidth={1.8} strokeDasharray="2 3" dot={false} connectNulls />}
                         </ComposedChart>
                       </ResponsiveContainer>
                     </div>
@@ -3147,6 +3352,7 @@ export default function App() {
                     <Line type="monotone" dataKey={`${prevY}`} name={`${prevY} (אשתקד)`} stroke={C.dim} strokeWidth={2} dot={false} connectNulls />
                     <Line type="monotone" dataKey={`${y}`} name={`${y} (השנה)`} stroke={C.teal} strokeWidth={3} dot={{ r: 4 }} connectNulls />
                     {metric === "quality" && <Line type="monotone" dataKey={`${y}_forecast`} name={`${y} · תחזית`} stroke={C.amber} strokeWidth={2} strokeDasharray="6 4" dot={false} connectNulls />}
+                    {metric === "quality" && core && <Line type="monotone" dataKey="target" name="יעד החודש (קצב)" stroke={C.violet} strokeWidth={1.8} strokeDasharray="2 3" dot={false} connectNulls />}
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
