@@ -619,6 +619,127 @@ function parseYoYTargets(csvText) {
 }
 export { parseYoYTargets };
 
+/* ===== קובץ סיכום חודש (ביצועים לפי קמפיין · אתר +מגזין פיבוט · הארווארד) =====
+   כל ערך מאותר לפי כותרת העמודה × שם השורה — בלי תלות באות עמודה או מספר שורה.
+   מחזיר { month:{y,mo,rows}, fields:[{key,label,sheet,how,cell,value,check}], warnings:[] } */
+function parseMonthSummary(wb) {
+  const T = (v) => String(v == null ? "" : v).trim();
+  const sheets = wb.SheetNames.map((name) => {
+    const ws = wb.Sheets[name];
+    const rg = ws && ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : null;
+    return { name, ws, rg, nRows: rg ? rg.e.r - rg.s.r : 0 };
+  });
+  const rowsOf = (s) => { if (!s._rows) s._rows = XLSX.utils.sheet_to_json(s.ws, { header: 1, raw: true, defval: null }); return s._rows; };
+  const addr = (s, i, j) => XLSX.utils.encode_cell({ r: s.rg.s.r + i, c: s.rg.s.c + j });
+  const fields = [], warnings = [];
+  const push = (key, label, s, how, i, j) => {
+    const raw = rowsOf(s)[i][j];
+    fields.push({ key, label, sheet: s.name, how, cell: addr(s, i, j), value: toNum(raw) ?? 0, check: null });
+  };
+  const small = sheets.filter((s) => s.rg && s.nRows < 3000);
+
+  /* פיבוט: שורת כותרת עם "תקין" + "סכום כולל" → שורת "סכום כולל" בעמודה הראשונה */
+  /* labelRe: חובה ששורות הפיבוט יכילו תווית מתאימה (לאתר: Website / Magazine) — כדי לא לבלבל עם פיבוטים אחרים */
+  const findPivot = (wantCost, labelRe) => {
+    for (const s of small) {
+      const R = rowsOf(s);
+      for (let i = 0; i < Math.min(R.length, 40); i++) {
+        const c = (R[i] || []).map(T);
+        const jq = c.indexOf("תקין"), jt = c.indexOf("סכום כולל"), jc = c.indexOf("עלות");
+        if (jq === -1 || jt === -1 || (wantCost ? jc === -1 : jc !== -1)) continue;
+        for (let k = i + 1; k < R.length; k++) {
+          if (T((R[k] || [])[0]) !== "סכום כולל") continue;
+          if (labelRe) {
+            const labels = R.slice(i + 1, k).map((r) => T((r || [])[0])).filter(Boolean);
+            if (!labels.length || !labels.every((l) => labelRe.test(l))) break;
+          }
+          return { s, h: i, tot: k, jq, jt, jc, jp: c.indexOf("בתהליך"), jn: c.indexOf("לא תקין") };
+        }
+      }
+    }
+    return null;
+  };
+  const deg = findPivot(true);
+  if (deg) {
+    const how = (h) => `"${h}" × "סכום כולל"`;
+    push("dq", "תארים · לידים איכותיים", deg.s, how("תקין"), deg.tot, deg.jq);
+    push("dg", "תארים · לידים ברוטו", deg.s, how("סכום כולל"), deg.tot, deg.jt);
+    push("dspent", "תארים · תקציב שמומש", deg.s, how("עלות"), deg.tot, deg.jc);
+    if (deg.jp !== -1) push("dproc", "תארים · בתהליך", deg.s, how("בתהליך"), deg.tot, deg.jp);
+  } else warnings.push("לא נמצא פיבוט תארים (כותרות תקין / סכום כולל / עלות)");
+
+  const site = findPivot(false, /website|magazine|אתר|מגזין/i);
+  if (site) {
+    const how = (h) => `"${h}" × "סכום כולל"`;
+    push("sq", "אתר + מגזין · לידים איכותיים", site.s, how("תקין"), site.tot, site.jq);
+    push("sg", "אתר + מגזין · לידים ברוטו", site.s, how("סכום כולל"), site.tot, site.jt);
+  } else warnings.push("לא נמצא פיבוט אתר + מגזין");
+
+  /* הארווארד: אחרי שורה שמכילה "הארווארד" — כותרת עם לידים ברוטו/איכותיים/תקציב שמומש, ואז שורת Total */
+  let harv = null;
+  for (const s of small) {
+    const R = rowsOf(s);
+    const hi = R.findIndex((r) => (r || []).some((v) => T(v).includes("הארווארד")));
+    if (hi === -1) continue;
+    for (let i = hi + 1; i < Math.min(R.length, hi + 10); i++) {
+      const c = (R[i] || []).map(T);
+      const jg = c.indexOf("לידים ברוטו"), jq = c.indexOf("לידים איכותיים"), js = c.indexOf("תקציב שמומש");
+      if (jg === -1 || jq === -1) continue;
+      const k = R.findIndex((r, idx) => idx > i && (r || []).some((v) => T(v) === "Total"));
+      if (k !== -1) harv = { s, k, jg, jq, js };
+      break;
+    }
+    if (harv) break;
+  }
+  if (harv) {
+    push("hq", "הארווארד · לידים איכותיים", harv.s, '"לידים איכותיים" × "Total"', harv.k, harv.jq);
+    push("hg", "הארווארד · לידים ברוטו", harv.s, '"לידים ברוטו" × "Total"', harv.k, harv.jg);
+    if (harv.js !== -1) push("hspent", "הארווארד · תקציב שמומש", harv.s, '"תקציב שמומש" × "Total"', harv.k, harv.js);
+  }
+
+  /* אימות מול הגולמי + זיהוי חודש: לשוניות עם "תאריך יצירת האירוע" + "איכות" בשורה הראשונה,
+     שמספר השורות שלהן קרוב לברוטו בפיבוט */
+  const get = (k) => (fields.find((f) => f.key === k) || {}).value;
+  const rawFor = (gross) => {
+    if (!gross) return null;
+    let best = null;
+    for (const s of sheets) {
+      if (!s.rg || Math.abs(s.nRows - gross) > Math.max(5, gross * 0.25)) continue;
+      const R = rowsOf(s); const h = (R[0] || []).map(T);
+      const jd = h.indexOf("תאריך יצירת האירוע"), jq = h.indexOf("איכות");
+      if (jd === -1 || jq === -1) continue;
+      let n = 0, q = 0; const months = {};
+      for (let i = 1; i < R.length; i++) {
+        const r = R[i]; if (!r || r.every((v) => v == null || v === "")) continue;
+        n++; if (T(r[jq]) === "תקין") q++;
+        const d = r[jd]; let ym = null;
+        if (d instanceof Date) ym = `${d.getFullYear()}-${d.getMonth() + 1}`;
+        else { const m = T(d).match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/); if (m) ym = `${m[3].length === 2 ? "20" + m[3] : m[3]}-${+m[2]}`; }
+        if (ym) months[ym] = (months[ym] || 0) + 1;
+      }
+      const cand = { sheet: s.name, n, q, months };
+      if (!best || Math.abs(n - gross) < Math.abs(best.n - gross)) best = cand;
+    }
+    return best;
+  };
+  const rawD = rawFor(get("dg")), rawS = rawFor(get("sg"));
+  const setCheck = (k, rawVal, src) => { const f = fields.find((x) => x.key === k); if (f && rawVal != null) f.check = { raw: rawVal, src }; };
+  if (rawD) { setCheck("dg", rawD.n, rawD.sheet); setCheck("dq", rawD.q, rawD.sheet); }
+  if (rawS) { setCheck("sg", rawS.n, rawS.sheet); setCheck("sq", rawS.q, rawS.sheet); }
+
+  let month = null;
+  const mm = (rawD && rawD.months) || (rawS && rawS.months);
+  if (mm) {
+    const [ym, cnt] = Object.entries(mm).sort((a, b) => b[1] - a[1])[0];
+    const [yy, mo] = ym.split("-").map(Number);
+    const total = Object.values(mm).reduce((a, b) => a + b, 0);
+    month = { y: yy, mo, rows: cnt, total };
+    if (cnt < total) warnings.push(`${total - cnt} שורות בנתונים הגולמיים מחוץ לחודש שזוהה`);
+  }
+  return { month, fields, warnings };
+}
+export { parseMonthSummary };
+
 /* חגים עבריים לחודש גרגוריאני נתון — מזוהים דרך לוח השנה העברי של הדפדפן.
    מחזיר [{day, label}] לימים שהם חג/ערב חג באותו חודש. */
 function hebrewHolidaysForMonth(gy, gm) {
@@ -1176,7 +1297,11 @@ export default function App() {
   const [yoyData, setYoyData] = useState(null);           /* לידים: { year: { "MM-DD": {gross, quality} } } */
   const [yoyBudget, setYoyBudget] = useState(null);
   const [yoyTargets, setYoyTargets] = useState(null);     /* יעדים: { "YYYY-MM": {deg, site, qDeg, qSite} } */
-  const [coreView, setCoreView] = useState("month");      /* month | ytd — טוגל הפילוח בבלוק הליבה */       /* תקציב: { year: { "MM-DD": {digital,site,total} } } */
+  const [coreView, setCoreView] = useState("month");
+  const [monthCloseOpen, setMonthCloseOpen] = useState(false);  /* מודל סגירת חודש */
+  const [mcDraft, setMcDraft] = useState(null);           /* קובץ שנטען ועוד לא אושר */
+  const [monthClosures, setMonthClosures] = useState({}); /* "YYYY-MM" → {status, values, edited, provisionalQ, savedAt} */
+  const [mcTest, setMcTest] = useState(null);             /* סגירה במצב בדיקה — לא נשמרת */      /* month | ytd — טוגל הפילוח בבלוק הליבה */       /* תקציב: { year: { "MM-DD": {digital,site,total} } } */
   const [yoyLink, setYoyLink] = useState("");             /* קישור חוברת ה-YoY (כוללת את שתי הלשוניות) */
   const [yoyUpdatedAt, setYoyUpdatedAt] = useState(null);
   const [yoyMetric, setYoyMetric] = useState("quality");  /* gross | quality | qpct | cpl | cpql */
@@ -1293,6 +1418,8 @@ export default function App() {
       if (yoyLinkSaved) setYoyLink(yoyLinkSaved);
       const yoySaved = await store.get("peres:yoy:data");
       if (yoySaved && yoySaved.byYear) { setYoyData(yoySaved.byYear); setYoyBudget(yoySaved.budget || null); setYoyTargets(yoySaved.targets || null); setYoyUpdatedAt(new Date(yoySaved.savedAt)); }
+      const mcSaved = await store.get("peres:monthclose");
+      if (mcSaved && typeof mcSaved === "object") setMonthClosures(mcSaved);
       const evSaved = await store.get("peres:events");
       if (Array.isArray(evSaved)) setUserEvents(evSaved);
       const savedAuto = await store.get("peres:autosync");
@@ -1654,6 +1781,75 @@ export default function App() {
     if (!silent) setStatus({ kind: "err", msg: "לא הצלחתי למשוך את חוברת ה-YoY — ודאו שהיא משותפת לצפייה, ושיש בה לשונית לידים (תאריך/מקור/איכות) ולשונית תקציב (Date/Cost)" });
   }, [saveYoY]);
 
+  /* ---------- סגירת חודש ---------- */
+  const HE_MONTHS = ["", "ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"];
+  const onMonthFile = useCallback(async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    try {
+      const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: true });
+      const r = parseMonthSummary(wb);
+      if (!r.fields.length) { setStatus({ kind: "err", msg: "לא זוהו נתונים בקובץ — ודאו שזה קובץ סיכום חודש (ביצועים לפי קמפיין / אתר +מגזין פיבוט)" }); return; }
+      setMcDraft({ ...r, fileName: f.name, y: r.month ? r.month.y : new Date().getFullYear(), mo: r.month ? r.month.mo : new Date().getMonth() + 1 });
+    } catch (err) {
+      setStatus({ kind: "err", msg: "קריאת הקובץ נכשלה: " + (err && err.message ? err.message : "") });
+    }
+  }, []);
+
+  /* הנתון הזמני של החודש לפני הסגירה — לחישוב "+X הבשילו" */
+  const provisionalFor = (yy, mo) => {
+    const key = `${yy}-${String(mo).padStart(2, "0")}`;
+    const prev = monthClosures[key];
+    if (prev && prev.provisionalQ != null) return prev.provisionalQ;
+    const pdm = (s) => { const m = String(s || "").match(/\d{1,2}[\/.\-](\d{1,2})[\/.\-](\d{2,4})/); return m ? +m[1] : null; };
+    const activeMo = data && data.meta ? pdm(data.meta.endDate) : null;
+    if (activeMo === mo) {
+      const rt = reportTotals(data);
+      return (rt ? rt.degQuality : 0) + (siteData && siteData.summary ? (siteData.summary.actual.quality || 0) : 0);
+    }
+    const a = yoyArchiveMonthly && yoyArchiveMonthly.monthSrc && yoyArchiveMonthly.monthSrc[mo];
+    return a ? a.dq + a.sq : null;
+  };
+
+  const applyMonthClose = async (mode) => {
+    const d = mcDraft;
+    if (!d || !d.y || !d.mo) return;
+    const key = `${d.y}-${String(d.mo).padStart(2, "0")}`;
+    const rec = {
+      status: mode === "final" ? "final" : "provisional",
+      values: Object.fromEntries(d.fields.map((f) => [f.key, Number(f.value) || 0])),
+      edited: d.fields.filter((f) => f.edited).map((f) => f.key),
+      fileName: d.fileName,
+      savedAt: new Date().toISOString(),
+      provisionalQ: provisionalFor(d.y, d.mo),
+    };
+    const label = `${HE_MONTHS[d.mo]} ${d.y}`;
+    if (mode === "test") {
+      setMcTest({ key, ...rec, status: "test" });
+      setStatus({ kind: "ok", msg: `🧪 מצב בדיקה: ${label} מוצג כסגור — לא נשמר. רענון הדף מבטל.` });
+    } else {
+      const next = { ...monthClosures, [key]: rec };
+      setMonthClosures(next);
+      await store.set("peres:monthclose", next);
+      setMcTest(null);
+      setStatus({ kind: "ok", msg: mode === "final" ? `📌 ${label} נסגר סופית` : `⏳ ${label} נשמר כזמני` });
+    }
+    setMcDraft(null);
+    setMonthCloseOpen(false);
+    setBoard("summary");
+    setOverviewTab("yoy");
+  };
+
+  const cancelMonthClose = async (key) => {
+    const next = { ...monthClosures };
+    delete next[key];
+    setMonthClosures(next);
+    await store.set("peres:monthclose", next);
+    if (mcTest && mcTest.key === key) setMcTest(null);
+    setStatus({ kind: "ok", msg: "הסגירה בוטלה — החודש חוזר לחישוב מהארכיון" });
+  };
+
   const fetchYoYRef = React.useRef(null);
   fetchYoYRef.current = fetchYoY;
 
@@ -1735,12 +1931,19 @@ export default function App() {
   useEffect(() => {
     if (!(board === "summary" && overviewTab === "yoy")) return;
     (async () => {
+      /* החודש הפעיל לפי "מועד ירידה" של הדוח המחובר (לא לפי שעון המחשב) */
+      const pd = (s) => { const m = String(s || "").match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})/); if (!m) return null; let yy = m[3]; yy = yy.length === 2 ? "20" + yy : yy; return { d: +m[1], mo: +m[2], y: +yy }; };
+      const endM = data && data.meta ? pd(data.meta.endDate) : null;
+      const repM = data && data.meta ? pd(data.meta.reportDate) : null;
       const rd = new Date(); rd.setDate(rd.getDate() - 1);
-      const y = rd.getFullYear(), mo = rd.getMonth() + 1, mm = String(mo).padStart(2, "0");
+      const y = endM ? endM.y : rd.getFullYear(), mo = endM ? endM.mo : rd.getMonth() + 1, mm = String(mo).padStart(2, "0");
       const daysInM = new Date(y, mo, 0).getDate();
+      const endMonthOfRec = (rec) => { const e = rec && rec.data && rec.data.meta ? pd(rec.data.meta.endDate) : null; return e ? e.mo : null; };
       const cumOfDay = async (iso) => {
-        const main = await store.get(dayKey(iso));
+        let main = await store.get(dayKey(iso));
         const site = await store.get("peres:siteday:" + iso);
+        /* דוח שמדבר על חודש אחר (למשל דוח ספטמבר שנשמר ב-2.10) לא נכנס לסדרת החודש הזה */
+        if (main && endMonthOfRec(main) != null && endMonthOfRec(main) !== mo) main = null;
         if (!main && !site) return null;
         let q = 0, b = 0;
         if (main && main.data) {
@@ -1773,7 +1976,8 @@ export default function App() {
          כולל דוחות שעלו בימי ההשלמה בתחילת החודש הבא. */
       const acadMonthsSeq = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9];
       const rd2 = new Date(); rd2.setDate(rd2.getDate() - 1);
-      const rY = rd2.getFullYear(), rMo = rd2.getMonth() + 1, rDay = rd2.getDate();
+      const rY = endM ? endM.y : rd2.getFullYear(), rMo = endM ? endM.mo : rd2.getMonth() + 1;
+      const rDay = repM && repM.mo === rMo ? repM.d : (endM ? new Date(rY, rMo, 0).getDate() : rd2.getDate());
       const curIdx = acadMonthsSeq.indexOf(rMo);
       const acadStartY = rMo >= 10 ? rY : rY - 1;
       const monthQ = {}, monthSrc = {}; /* mo → סך איכותיים · mo → {dq, sq, dg, sg} */
@@ -1818,7 +2022,7 @@ export default function App() {
       }
       setYoyArchiveMonthly({ monthQ, monthSrc, curMo: rMo, curDay: rDay });
     })();
-  }, [board, overviewTab, updatedAt, siteUpdatedAt, dayIndex]);
+  }, [board, overviewTab, updatedAt, siteUpdatedAt, dayIndex, data]);
 
   /* ה"חוברת" הפעילה: תארים / הארווארד / אתר — לכל אחת נתונים, דלתות, תובנות וסטורי משלה */
   const view = useMemo(() => {
@@ -2971,6 +3175,13 @@ export default function App() {
         const yoyGood = yoyDiff == null ? null : (M.better === "up" ? yoyDiff >= 0 : yoyDiff <= 0);
 
         /* ===== תצוגה חודשית + תחזית (רק למדד איכותיים) ===== */
+        /* חודשים סגורים (סיכום חודש) גוברים על הארכיון. מצב בדיקה גובר על הכל ולא נשמר */
+        const closuresEff = { ...monthClosures, ...(mcTest ? { [mcTest.key]: mcTest } : {}) };
+        const acadStartR = mo >= 10 ? y : y - 1;
+        const ymKey = (m2) => `${m2 >= 10 ? acadStartR : acadStartR + 1}-${String(m2).padStart(2, "0")}`;
+        const closedOf = (m2) => closuresEff[ymKey(m2)] || null;
+        const closedSrc = (m2) => { const c = closedOf(m2); if (!c) return null; const v = c.values || {}; return { dq: v.dq || 0, sq: v.sq || 0, dg: v.dg || 0, sg: v.sg || 0 }; };
+        const maturedOf = (m2) => { const c = closedOf(m2); const s = closedSrc(m2); return c && s && c.provisionalQ != null ? (s.dq + s.sq) - c.provisionalQ : null; };
         const MONTH_NAMES = { 10: "אוקטובר", 11: "נובמבר", 12: "דצמבר", 1: "ינואר", 2: "פברואר", 3: "מרץ", 4: "אפריל", 5: "מאי", 6: "יוני", 7: "יולי", 8: "אוגוסט", 9: "ספטמבר" };
         const acadSeq = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         const monthlyData = (() => {
@@ -2995,13 +3206,15 @@ export default function App() {
           const archMonthQ = am.monthQ || {}; /* חודשים שהסתיימו מהארכיון */
 
           /* איכותיים של החודש הנוכחי השנה = הרובריקה החיה (תארים+אתר, ללא הארווארד) */
-          const curMonthThisYear = curBase.quality || 0;
+          const curClosed = closedSrc(curMo);
+          const curMonthThisYear = curClosed ? curClosed.dq + curClosed.sq : (curBase.quality || 0);
+          const monthVal = (m2) => { const c = closedSrc(m2); return c ? c.dq + c.sq : archMonthQ[m2]; };
 
           /* יחס מצטבר עד היום: סך השנה עד היום ÷ סך אשתקד עד אותה נקודה אקדמית */
           let curCumToDate = 0, prevCumToDate = 0;
           for (let mi = 0; mi <= curIdx; mi++) {
             const m2 = acadSeq[mi];
-            curCumToDate += (mi === curIdx) ? curMonthThisYear : (archMonthQ[m2] || 0);
+            curCumToDate += (mi === curIdx) ? curMonthThisYear : (monthVal(m2) || 0);
             if (mi < curIdx) prevCumToDate += (prevMonthQ[m2] || 0);
             else {
               /* החודש הנוכחי אשתקד — עד אותו יום-בחודש בלבד (תפוח לתפוח) */
@@ -3024,8 +3237,8 @@ export default function App() {
             const m2 = acadSeq[mi];
             const prevV = prevMonthQ[m2];
             let curV = null;
-            if (mi < curIdx) curV = archMonthQ[m2] ?? null;               /* חודש שהסתיים — מהארכיון */
-            else if (mi === curIdx) curV = curMonthProjected;             /* חודש נוכחי — מושלם לפי קצב */
+            if (mi < curIdx) curV = monthVal(m2) ?? null;                 /* חודש שהסתיים — סגור או מהארכיון */
+            else if (mi === curIdx) curV = curClosed ? curMonthThisYear : curMonthProjected; /* חודש נוכחי — סגור = סופי, אחרת לפי קצב */
             else curV = Math.round(prevV * ratio);                        /* חודשים עתידיים — תחזית */
             rows.push({ mo: m2, name: MONTH_NAMES[m2], prev: prevV, cur: mi <= curIdx ? curV : null, forecast: mi >= curIdx ? curV : null });
           }
@@ -3035,7 +3248,8 @@ export default function App() {
             cp += r.prev || 0;
             const actualOrProj = (r.cur != null ? r.cur : r.forecast) || 0;
             cc += actualOrProj;
-            return { name: r.name, [`${prevY}`]: cp, [`${y}`]: r.cur != null ? cc : null, forecast: r.forecast != null ? cc : null };
+            const mt = r.cur != null ? maturedOf(r.mo) : null;
+            return { name: r.name, [`${prevY}`]: cp, [`${y}`]: r.cur != null ? cc : null, forecast: r.forecast != null ? cc : null, matured: mt };
           });
           /* נקודת החיבור: החודש הנוכחי צריך להופיע גם ב-cur וגם ב-forecast כדי שהקווים יתחברו */
           const connIdx = curIdx;
@@ -3063,7 +3277,7 @@ export default function App() {
 
           /* בפועל — החודש הנוכחי מהנתונים החיים */
           const rt = reportTotals(data);
-          const curM = {
+          const curM = closedSrc(mo) || {
             dq: rt ? rt.degQuality : 0,
             sq: siteData && siteData.summary ? (siteData.summary.actual.quality || 0) : 0,
             dg: data.totalsRow && data.totalsRow.gross != null ? data.totalsRow.gross : (data.summary ? (data.summary.actual.gross || 0) : 0),
@@ -3086,7 +3300,8 @@ export default function App() {
           let curY = { ...curM }, lyY = { ...lyM };
           for (let mi = 0; mi < cIdx; mi++) {
             const m2 = acadSeq[mi];
-            if (arch[m2]) curY = add(curY, arch[m2]);
+            const srcM = closedSrc(m2) || arch[m2];
+            if (srcM) curY = add(curY, srcM);
             lyY = add(lyY, sumLY(m2));
           }
           /* יעדים: איכותיים + ברוטו משתמע (איכותיים ÷ % איכות) */
@@ -3101,7 +3316,11 @@ export default function App() {
           for (let mi = 0; mi < cIdx; mi++) tY = add(tY, tPart(acadSeq[mi], 1));
           const annualTarget = acadSeq.reduce((s, m2) => s + tg(m2).deg + tg(m2).site, 0);
           const forecast = monthlyData ? monthlyData.finalCur : null;
-          return { curM, curY, lyM, lyY, tM, tY, tMonthFull, annualTarget, forecast, tg, pace };
+          const closedNotes = acadSeq.slice(0, cIdx + 1).map((m2) => {
+            const c = closedOf(m2); const s = closedSrc(m2); if (!c || !s) return null;
+            return { m2, status: c.status, prov: c.provisionalQ, fin: s.dq + s.sq, matured: maturedOf(m2), edited: (c.edited || []).length };
+          }).filter(Boolean);
+          return { curM, curY, lyM, lyY, tM, tY, tMonthFull, annualTarget, forecast, tg, pace, closedNotes };
         })();
         /* קו יעד מצטבר בגרף החודשי, וקו קצב יעד בגרף היומי */
         if (core && monthlyData) {
@@ -3139,8 +3358,29 @@ export default function App() {
               const qpL = (P.l.dg + P.l.sg) ? ((P.l.dq + P.l.sq) / (P.l.dg + P.l.sg)) * 100 : null;
               return (
                 <div className="panel" style={{ marginBottom: 20, borderColor: C.amber }}>
-                  <h2>🎯 ליבה (תארים + אתר) · לידים איכותיים</h2>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                    <h2>🎯 ליבה (תארים + אתר) · לידים איכותיים</h2>
+                    <button className="btn ghost" onClick={() => setMonthCloseOpen(true)}>📌 סגירת חודש</button>
+                  </div>
                   <div className="hint">פעילות הליבה שבידיים שלנו — מול יעד ומול אשתקד. יעד החודש מחושב לפי קצב עד יום הדיווח.</div>
+                  {mcTest && (
+                    <div className="status" style={{ borderColor: C.amber, color: C.amber }}>
+                      🧪 מצב בדיקה: {HE_MONTHS[+mcTest.key.split("-")[1]]} מוצג כסגור — שום דבר לא נשמר.
+                      <button className="btn ghost" style={{ marginRight: 10 }} onClick={() => setMcTest(null)}>יציאה ממצב בדיקה</button>
+                    </div>
+                  )}
+                  {core.closedNotes.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 12, fontSize: 13 }}>
+                      {core.closedNotes.map((n) => (
+                        <div key={n.m2} style={{ color: C.dim }}>
+                          {n.status === "final" ? "📌" : n.status === "test" ? "🧪" : "⏳"} {HE_MONTHS[n.m2]} {n.status === "final" ? "נסגר" : n.status === "test" ? "(בדיקה)" : "(זמני)"}:{" "}
+                          {n.prov != null ? <>{num(n.prov)} → </> : null}<b style={{ color: C.text }}>{num(n.fin)}</b>
+                          {n.matured != null && <> · <b style={{ color: n.matured >= 0 ? C.teal : C.coral }}>{n.matured >= 0 ? "+" : ""}{num(n.matured)} הבשילו</b></>}
+                          {n.edited > 0 && <> · ✏️ {n.edited} ערכים תוקנו ידנית</>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="grid-kpi" style={{ marginBottom: 18 }}>
                     <div className="kpi">
                       <div className="kpi-title">החודש עד היום ({fullDate})</div>
@@ -3303,6 +3543,7 @@ export default function App() {
                           <Line type="monotone" dataKey={`${y}`} name={`${y} (השנה)`} stroke={C.teal} strokeWidth={3} dot={{ r: 4 }} connectNulls />
                           <Line type="monotone" dataKey="forecast" name={`${y} · תחזית`} stroke={C.amber} strokeWidth={2.5} strokeDasharray="6 4" dot={{ r: 3 }} connectNulls />
                           {core && <Line type="monotone" dataKey="target" name="יעד מצטבר" stroke={C.violet} strokeWidth={1.8} strokeDasharray="2 3" dot={false} connectNulls />}
+                          <Line dataKey="matured" name="כמות לידים שהבשילו (נכלל במספר הסופי)" stroke="transparent" dot={false} activeDot={false} legendType="none" isAnimationActive={false} />
                         </ComposedChart>
                       </ResponsiveContainer>
                     </div>
@@ -3458,6 +3699,94 @@ export default function App() {
       {story && <StoryMode slides={buildSlides(view.data, totals, view.delta, insights, isActive, view.label)} onClose={() => setStory(false)} onShare={shareStory} />}
 
       {/* ---------- לוח שנה שנתי ---------- */}
+      {monthCloseOpen && (
+        <div className="cal-overlay" dir="rtl" onClick={() => { setMonthCloseOpen(false); setMcDraft(null); }}>
+          <div className="cal-sheet" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 980 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <h2 style={{ margin: 0 }}>📌 סגירת חודש</h2>
+              <button className="btn ghost" onClick={() => { setMonthCloseOpen(false); setMcDraft(null); }}>✕</button>
+            </div>
+            <div className="hint">
+              מעלים את קובץ סיכום החודש (xlsx). הנתונים נמשכים לפי כותרות ושמות שורות — לא לפי מיקום — ומוצגים לאימות לפני שמשהו נשמר. אפשר לתקן כל ערך ידנית.
+            </div>
+            {!mcDraft && (
+              <label className="btn file-btn" style={{ display: "inline-block", marginTop: 8 }}>
+                📂 בחירת קובץ סיכום חודש
+                <input type="file" accept=".xlsx,.xls" onChange={onMonthFile} />
+              </label>
+            )}
+            {mcDraft && (
+              <>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", margin: "10px 0" }}>
+                  <span style={{ fontSize: 13, color: C.dim }}>{mcDraft.fileName}</span>
+                  <span style={{ fontSize: 13 }}>
+                    חודש: {mcDraft.month ? <b>זוהה {HE_MONTHS[mcDraft.month.mo]} {mcDraft.month.y} (לפי {num(mcDraft.month.rows)} שורות)</b> : <b style={{ color: C.amber }}>לא זוהה — בחרו ידנית</b>}
+                  </span>
+                  <select className="qual-select" value={mcDraft.mo} onChange={(e) => setMcDraft({ ...mcDraft, mo: +e.target.value })}>
+                    {HE_MONTHS.slice(1).map((n, i) => <option key={i} value={i + 1}>{n}</option>)}
+                  </select>
+                  <input className="qual-select" type="number" style={{ maxWidth: 90 }} value={mcDraft.y} onChange={(e) => setMcDraft({ ...mcDraft, y: +e.target.value })} />
+                </div>
+                {mcDraft.warnings.map((w, i) => <div key={i} className="status" style={{ borderColor: C.amber, color: C.amber }}>⚠️ {w}</div>)}
+                {monthClosures[`${mcDraft.y}-${String(mcDraft.mo).padStart(2, "0")}`] && (
+                  <div className="status" style={{ borderColor: C.amber, color: C.amber }}>
+                    לחודש הזה כבר קיימת סגירה ({monthClosures[`${mcDraft.y}-${String(mcDraft.mo).padStart(2, "0")}`].status === "final" ? "סופית" : "זמנית"}) — שמירה תדרוס אותה.
+                  </div>
+                )}
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>נתון</th><th>לשונית</th><th>נמצא לפי</th><th>תא</th><th>ערך</th><th>אימות מול גולמי</th></tr></thead>
+                    <tbody>
+                      {mcDraft.fields.map((f) => {
+                        const ok = f.check ? f.check.raw === Number(f.value) : null;
+                        return (
+                          <tr key={f.key} style={f.key.startsWith("h") ? { opacity: 0.7 } : undefined}>
+                            <td style={{ fontWeight: 700 }}>{f.label}{f.key.startsWith("h") ? " (לא בליבה)" : ""}</td>
+                            <td style={{ color: C.dim }}>{f.sheet}</td>
+                            <td style={{ color: C.dim }}>{f.how}</td>
+                            <td><code>{f.cell}</code></td>
+                            <td>
+                              <input className="qual-select" type="number" style={{ maxWidth: 120 }} value={f.value}
+                                onChange={(e) => setMcDraft({ ...mcDraft, fields: mcDraft.fields.map((x) => x.key === f.key ? { ...x, value: e.target.value, edited: true } : x) })} />
+                              {f.edited && <span style={{ color: C.amber, fontSize: 12 }}> ✏️ תוקן</span>}
+                            </td>
+                            <td style={{ color: ok == null ? C.dim : ok ? C.teal : C.coral, fontWeight: 700 }}>
+                              {f.check ? `${ok ? "✓" : "⚠"} ${num(f.check.raw)} (${f.check.src})` : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+                  <button className="btn ghost" onClick={() => applyMonthClose("test")} title="הבורד יציג את החודש כסגור — בלי לשמור">🧪 בדיקה בלבד</button>
+                  <button className="btn ghost" onClick={() => applyMonthClose("provisional")} title="נשמר ומשפיע על הבורד, מסומן כזמני">⏳ שמור כזמני</button>
+                  <button className="btn" onClick={() => applyMonthClose("final")} title="נשמר כסופי ומחושבת ההבשלה">📌 סגור חודש</button>
+                  <button className="btn ghost" onClick={() => setMcDraft(null)}>קובץ אחר</button>
+                </div>
+              </>
+            )}
+            {Object.keys(monthClosures).length > 0 && (
+              <div style={{ marginTop: 18 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>חודשים שנסגרו</div>
+                {Object.entries(monthClosures).sort().map(([k, c]) => {
+                  const [yy, mm2] = k.split("-").map(Number);
+                  const fin = (c.values.dq || 0) + (c.values.sq || 0);
+                  return (
+                    <div key={k} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, padding: "4px 0", borderTop: `1px solid ${C.line}` }}>
+                      <span>{c.status === "final" ? "📌" : "⏳"} {HE_MONTHS[mm2]} {yy}</span>
+                      <span style={{ color: C.dim }}>ליבה {num(fin)}{c.provisionalQ != null ? ` · +${num(fin - c.provisionalQ)} הבשילו` : ""} · {new Date(c.savedAt).toLocaleDateString("he-IL")}</span>
+                      <button className="btn ghost" style={{ marginRight: "auto" }} onClick={() => cancelMonthClose(k)}>בטל סגירה</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {calOpen && (
         <div className="cal-overlay" dir="rtl" onClick={() => setCalOpen(false)}>
           <div className="cal-sheet" onClick={(e) => e.stopPropagation()}>
@@ -3480,6 +3809,7 @@ export default function App() {
                 }} title="דחיפת כל הארכיון המקומי לענן — פעולה חד-פעמית להעברת היסטוריה קיימת">
                   {cloudBusy ? "⏳ מעלה…" : "☁️⬆️ העלאה לענן"}
                 </button>
+                <button className="btn ghost" onClick={() => { setCalOpen(false); setMonthCloseOpen(true); }} title="העלאת סיכום חודש סופי">📌 סגירת חודש</button>
                 <button className="btn ghost" onClick={exportArchive} title="הורדת כל הארכיון כקובץ — גיבוי מקומי">⬇️ גיבוי</button>
                 <label className="btn ghost file-btn" title="ייבוא קובץ גיבוי שהורד בדפדפן אחר">
                   ⬆️ ייבוא
